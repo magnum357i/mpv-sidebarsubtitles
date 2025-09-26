@@ -4,28 +4,29 @@
 A plugin I made just for my own fun. You can see the subtitle content in the sidebar. This repository was created as a backup and in case it might help others.
 
 # Installation
-Just put it into your **scripts** directory, and it will work.
+Just put `sidebarsubitltes.lua` into your **scripts** directory, and it will work.
 
 | Supported Themes        |
 |-------------------------|
 | MPV Default (not fully) |
-| UOSC                    |
+| uosc                    |
 
 ### MPV Default
-I’m not planning to shrink the controls for the default theme, please use [UOSC](https://github.com/tomasklaen/uosc).
+I’m not planning to shrink the controls for the default theme, please use [uosc](https://github.com/tomasklaen/uosc).
 
-### Editing UOSC
+### Editing uosc
 
-Open the file in `uosc/main.lua`, and follow these steps to shrink the player controls:
+Open `uosc/main.lua`, and follow these steps to shrink the player controls:
 
 ```
 # find:
     if real_width <= 0 then return end
 
-
 # add below:
 	local temp_width = real_width
 	if sidebarsubtitles_width and sidebarsubtitles_width > 0 then real_width = sidebarsubtitles_width end
+
+
 
 # find:
     Elements:update_proximities()
@@ -35,6 +36,8 @@ Open the file in `uosc/main.lua`, and follow these steps to shrink the player co
 	if sidebarsubtitles_width and sidebarsubtitles_width > 0 then
 	display.width, display.bx = temp_width, temp_width
 	end
+
+
 
 # find:
 --[[ MESSAGE HANDLERS ]]
@@ -47,9 +50,7 @@ end)
 ```
 
 # Known Bugs
-- Truncate
 - Scale
 
 # Planned Features
 - Search
-- External subtitles

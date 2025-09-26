@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.0             ║
+║             v1.0.1             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -19,7 +19,7 @@ local config  = {
 
     width                = 300,
     background_color     = "202020",
-    padding              = 20,
+    padding              = 15,
     max_len              = 35,
     fullscreen_scale     = 1.3,
     bar_width            = 3,
@@ -28,6 +28,8 @@ local config  = {
 
 options.read_options(config, "sidebarsubtitles")
 
+local isWindows      = package.config:sub(1, 1) ~= '/'
+local seperator      = isWindows and "//" or "\\"
 local offset         = 1
 local currentIndex   = 0
 local subtitles      = {}
@@ -81,16 +83,13 @@ end
 
 local function drawSidebar(mouseY)
 
-    local gap   = ((data.screenHeight - config.padding) - data.lineHeight * data.lineCount) / data.lineCount
     local lineY = config.padding
     offset      = (offset > data.totalLines) and data.totalLines or offset
     local ass   = assdraw.ass_new()
 
     ass:new_event()
-    ass:append(string.format("{\\1c&H%s&}", config.background_color))
-    ass:append("{\\alpha&H00&}")
-    ass:append("{\\bord0}")
     ass:pos(data.videoWidth, 0)
+    ass:append(string.format("{\\bord0\\alpha&H00&\\1c&H%s&}", config.background_color))
     ass:draw_start()
     ass:rect_cw(0, 0, config.width, data.screenHeight)
     ass:draw_stop()
@@ -104,8 +103,8 @@ local function drawSidebar(mouseY)
         local barY      = (offset / data.totalLines) * (data.screenHeight - barHeight)
 
         ass:new_event()
-        ass:append("{\\1c&HFFFFFF&\\bord0\\alpha&H80&}")
         ass:pos(barX, barY)
+        ass:append("{\\1c&HFFFFFF&\\bord0\\alpha&H80&}")
         ass:draw_start()
         ass:rect_cw(0, 0, config.bar_width, barHeight)
         ass:draw_stop()
@@ -119,54 +118,18 @@ local function drawSidebar(mouseY)
 
         if currentIndex == (i + offset - 1) then selected = true end
 
-        --hover
-
-        if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
-
-            ass:new_event()
-            ass:append(string.format("{\\1c&H%s&}", selected and "FFFFFF" or "000000"))
-
-            if not selected then ass:append("{\\alpha&H80&}") end
-
-            ass:append("{\\bord0}")
-            ass:pos(data.videoWidth, lineY - config.padding / 2)
-            ass:draw_start()
-            ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
-            ass:draw_stop()
-        end
-
-        --pattern/background
-
         if selected then
 
             ass:new_event()
-            ass:append(string.format("{\\1c&H%s&}", "FFFFFF"))
-            ass:append("{\\bord0}")
             ass:pos(data.videoWidth, lineY - config.padding / 2)
+            ass:append(string.format("{\\bord0\\1c&H%s&}", "FFFFFF"))
             ass:draw_start()
             ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
             ass:draw_stop()
-        else
-
-            if i % 2 == 0 then
-
-                ass:new_event()
-                ass:append(string.format("{\\1c&H%s&}", "000000"))
-                ass:append("{\\alpha&HC8&}")
-                ass:append("{\\bord0}")
-                ass:pos(data.videoWidth, lineY - config.padding / 2)
-                ass:draw_start()
-                ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
-                ass:draw_stop()
-            end
-        end
-
-        if selected then
 
             ass:new_event()
-            ass:append(string.format("{\\1c&H%s&}", "000000"))
-            ass:append("{\\bord0}")
-            ass:pos(data.videoWidth + 5, lineY - config.padding / 2 + data.lineHeight / 2 - 5)
+            ass:pos(data.videoWidth + 3, lineY - config.padding / 2 + data.lineHeight / 2 - 5)
+            ass:append(string.format("{\\bord0\\1c&H%s&}", "000000"))
             ass:draw_start()
 
             local triX, triY = 0, 0
@@ -174,38 +137,53 @@ local function drawSidebar(mouseY)
 
             ass:append(string.format("m %f %f l %f %f l %f %f l %f %f", triX, triY, triX, triY + triH, triX + triW, triY + triH/2, triX, triY))
             ass:draw_stop()
+        else
+
+            --hover
+
+           if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
+
+               ass:new_event()
+               ass:pos(data.videoWidth, lineY - config.padding / 2)
+               ass:append(string.format("{\\alpha&H80&\\bord0\\1c&H%s&}", selected and "FFFFFF" or "000000"))
+               ass:draw_start()
+               ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
+               ass:draw_stop()
+           end
+
+            --pattern/background
+
+            if i % 2 == 0 then
+
+                ass:new_event()
+                ass:pos(data.videoWidth, lineY - config.padding / 2)
+                ass:append(string.format("{\\bord0\\alpha&HC8&\\1c&H%s&}", "000000"))
+                ass:draw_start()
+                ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
+                ass:draw_stop()
+            end
         end
 
         --top
 
         ass:new_event()
-        ass:append(string.format("{\\1c&H%s&}", selected and "000000" or "888888"))
-        ass:append(string.format("{\\fs%s}", data.topFontSize))
-        ass:append("{\\b1}")
-        ass:append("{\\an7}")
-        ass:append("{\\bord0}")
         ass:pos(data.videoWidth + config.padding, lineY)
+        ass:append(string.format("{\\bord0\\an7\\b1\\1c&H%s&\\fs%s}", selected and "000000" or "888888", data.topFontSize))
         ass:append(string.format("#%d", i + offset - 1))
 
         ass:new_event()
-        ass:append(string.format("{\\1c&H%s&}", selected and "000000" or "888888"))
-        ass:append(string.format("{\\fs%s}", data.topFontSize))
-        ass:append("{\\alpha&H00&\\b0\\an9\\bord0}")
         ass:pos(data.videoWidth + config.width - config.padding, lineY)
+        ass:append(string.format("{\\alpha&H00&\\b0\\an9\\bord0\\1c&H%s&\\fs%s}", selected and "000000" or "888888", data.topFontSize))
         ass:append(ms2time(subtitles[i + offset - 1].start * 1000))
 
         --bottom
 
         ass:new_event()
-        ass:append(string.format("{\\1c&H%s&}", selected and "000000" or "FFFFFF"))
-        ass:append(string.format("{\\fs%s}", data.bottomFontSize))
-        ass:append("{\\b0}")
-        ass:append("{\\an7}")
-        ass:append("{\\bord0}")
         ass:pos(data.videoWidth + config.padding, lineY + data.topFontSize + 5)
+        ass:append(string.format("{\\bord0\\an7\\b0\\1c&H%s&\\fs%s}", selected and "000000" or "FFFFFF", data.bottomFontSize))
         ass:append(truncate(subtitles[i + offset - 1].text, config.max_len))
 
-        lineY = lineY + data.lineHeight + gap
+        lineY = lineY + data.lineHeight
     end
 
     mp.set_osd_ass(data.screenWidth, data.screenHeight, ass.text)
@@ -220,6 +198,8 @@ local function fillData()
     data.lineHeight                     = data.topFontSize + data.bottomFontSize * 2 + 5 + config.padding
     data.lineCount                      = math.floor((data.screenHeight - config.padding) / data.lineHeight)
     data.totalLines                     = #subtitles - data.lineCount + 1
+    local gap                           = ((data.screenHeight - config.padding) - data.lineHeight * data.lineCount) / data.lineCount
+    data.lineHeight                     = data.lineHeight + gap
 end
 
 local function detectUOSC()
@@ -314,8 +294,6 @@ local function getPath(key)
     paths.hash = paths.hash or hash(mp.get_property("path"))
 
     local fullPath
-    local isWindows = package.config:sub(1, 1) ~= '/'
-    local seperator = isWindows and "//" or "\\"
 
     if key == "cache" then
 
@@ -323,6 +301,9 @@ local function getPath(key)
     elseif key == "subtitlefile" then
 
         fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash..seperator..paths.filename:gsub("<id>", mp.get_property_number("sid", 0))..".ass")
+    elseif key == "mergedfile" then
+
+        fullPath = utils.join_path(paths.temp, "mpvdualsubtitles"..seperator..paths.hash..seperator.."merged.ass")
     end
 
     fullPath = fullPath:gsub("\\", "/")
@@ -333,19 +314,58 @@ end
 
 local function tryGetSubtitles()
 
-    local file = io.open(getPath("subtitlefile"), "r")
+    local merged = false
+    local file
+
+    file = io.open(getPath("mergedfile"), "r")
 
     if file then
 
-        local content = file:read("*all")
+        merged = true
+    else
+
+        local currentSubtitle = mp.get_property_native("current-tracks/sub", "")
+
+        if currentSubtitle.external then
+
+            local sourceFile = currentSubtitle["external-filename"]
+            local targetFile = getPath("subtitlefile")
+
+            if currentSubtitle.codec == "ass" then
+
+                if isWindows then
+
+                    runCommand({"powershell", "-NoProfile", "-Command", string.format("Copy-Item -LiteralPath \"%s\" -Destination \"%s\" -Force", sourceFile, targetFile)})
+                else
+
+                    runCommand({"cp", sourceFile, targetFile})
+                end
+            elseif currentSubtitle.codec == "subrip" then
+
+                runCommand({"ffmpeg", "-i", sourceFile, "-c:s", "ass", targetFile})
+            end
+        end
+
+        file = io.open(getPath("subtitlefile"), "r")
+    end
+
+    if file then
+
+        local content  = file:read("*all")
+        local prevLine = {}
 
         for line in content:gmatch("Dialogue:[^\n]+") do
 
             local t = {line:match("^Dialogue:%s([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.+)$")}
 
-            if t then
+            if t
+                and (not merged or merged and t[4] == "Primary")
+                and (prevLine and prevLine[2] ~= t[2] and prevLine[3] ~= t[3] and prevLine[10] ~= t[10])
+            then
 
                 table.insert(subtitles, {start = time2ms(t[2]) / 1000, text = strip(t[10])})
+
+                prevLine = t
             end
         end
 
@@ -370,6 +390,13 @@ end
 
 local function initSidebarWhenSubtitlesLoaded()
 
+    local tempPath = getPath("cache")
+
+    if not os.rename(tempPath, tempPath) then
+
+        runCommand({"powershell", "-NoProfile", "-Command", "mkdir", tempPath})
+    end
+
     local ok
 
     ok = tryGetSubtitles()
@@ -377,13 +404,6 @@ local function initSidebarWhenSubtitlesLoaded()
     if ok then return end
 
     mp.osd_message("Getting subtitles...", 9999)
-
-    local tempPath = getPath("cache")
-
-    if not os.rename(tempPath, tempPath) then
-
-        runCommand({"powershell", "-NoProfile", "-Command", "mkdir", tempPath})
-    end
 
     local args = {}
 
@@ -448,19 +468,40 @@ end
 
 function truncate(str, maxLen)
 
+    local content      = ""
+    local lCount       = 0
+    local speakerLines = str:match("^%s*%-%s+.-%-%s+...")
+
+    if speakerLines then
+
+        str = str.."- "
+        str = str:gsub("(%-%s+)", "<>%1")
+
+        for line in str:gmatch("(%-%s+.-)<>") do
+
+            lCount = lCount + 1
+            line   = sub(line, 1, config.max_len)
+
+            if lCount == 2 then line = "\\N"..line end
+
+            content = content..line
+        end
+
+        return content
+    end
+
     if len(str) <= maxLen then return str end
 
-    local lCount  = 0
-    local content = ""
+    str = str.." "
+
     local breaked = false
 
-    for word in str:gmatch(".-%s") do
+    for word in str:gmatch("[^%s]+%s") do
 
         local wLen = len(word)
 
         if (lCount + wLen) > (maxLen * 2) then
 
-            content = content:gsub("%s+$", "").."..."
             break
         end
 
@@ -486,6 +527,22 @@ function len(str)
     return n
 end
 
+function sub(str,sstart,send)
+
+    local n       = 0
+    local content = ""
+
+    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+
+        n = n + 1
+
+        if n >= sstart  then content = content..c end
+        if ssend == len then break                end
+    end
+
+    return content
+end
+
 function findIndexByTime()
 
     local start = mp.get_property_number("sub-start")
@@ -495,7 +552,7 @@ function findIndexByTime()
 
         for i = 1, data.lineCount do
 
-            if math.floor(subtitles[i + offset - 1].start) == math.floor(start) then
+            if start and math.floor(subtitles[i + offset - 1].start) == math.floor(start) then
 
                 index = i + offset - 1
 
@@ -508,7 +565,7 @@ function findIndexByTime()
 
     for i in ipairs(subtitles) do
 
-        if math.floor(subtitles[i].start) == math.floor(start) then
+        if start and math.floor(subtitles[i].start) == math.floor(start) then
 
             index = i
 
@@ -575,7 +632,6 @@ mp.add_forced_key_binding("mbtn_left", "sidebarsubtitlesclick", function()
 
     if cursorInSidebar() then
 
-        local gap       = ((data.screenHeight - config.padding) - data.lineHeight * data.lineCount) / data.lineCount
         local lineY     = config.padding
         local _, mouseY =  mp.get_mouse_pos()
 
@@ -583,12 +639,15 @@ mp.add_forced_key_binding("mbtn_left", "sidebarsubtitlesclick", function()
 
             if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
 
-                local index = offset + i - 1
+                local index  = offset + i - 1
+                currentIndex = index
 
-                mp.commandv("seek", subtitles[index].start, "absolute+exact")
+                mp.commandv("seek", subtitles[index].start + 0.01, "absolute+exact")
+
+                drawSidebar()
             end
 
-            lineY = lineY + data.lineHeight + gap
+            lineY = lineY + data.lineHeight
         end
     end
 end)
@@ -618,6 +677,11 @@ mp.add_forced_key_binding("wheel_down", "sidebarsubtitlesscrolldown", function()
         offset = offset >= #subtitles and #subtitles or offset + 1
         drawSidebar()
     end
+end)
+
+mp.observe_property("sid", "number", function(_, value)
+
+    if value and value > 0 then subtitles = {} end
 end)
 
 mp.add_key_binding("h", "sidebarsubtitles", toggleSidebar)
