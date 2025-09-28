@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.1             ║
+║             v1.0.2             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -18,12 +18,14 @@ local utils   = require "mp.utils"
 local config  = {
 
     width                = 300,
-    background_color     = "202020",
-    padding              = 15,
+    padding_x            = 20,
+    padding_y            = 10,
     max_len              = 35,
     fullscreen_scale     = 1.3,
     bar_width            = 3,
-    hide_loaded_subtitle = false
+    bar_minHeight        = 50,
+    hide_loaded_subtitle = false,
+    round                = 15
 }
 
 options.read_options(config, "sidebarsubtitles")
@@ -33,7 +35,9 @@ local seperator      = isWindows and "//" or "\\"
 local offset         = 1
 local currentIndex   = 0
 local subtitles      = {}
+local tempSubtitles  = {}
 local sidebarEnabled = false
+local search         = {enabled = false, keyPressed = false, text = "", cursor = 0, timer = nil, resultTimer = nil, processing = false, show = false}
 local data           = {}
 local customThemes   = {}
 local paths          = {
@@ -43,6 +47,26 @@ local paths          = {
     cacheFolder = "mpvsidebarsubtitles",
     filename    = "<id>"
 }
+
+local colors         = {
+
+    background         = "161616",
+    rowText            = "FFFFFF",
+    rowUpperText       = "888888",
+    rowHover           = "0B0B0B",
+    rowSelected        = "FFFFFF",
+    rowSelectedText    = "000000",
+    rowBorder          = "272727",
+    searchBackground   = "H676767",
+    searchText         = "888888",
+    searchHoverText    = "000000",
+    searchSelectedText = "00FF00",
+    scroll             = "888888"
+}
+
+local widthOverlay          = mp.create_osd_overlay("ass-events")
+widthOverlay.compute_bounds = true
+widthOverlay.hidden         = true
 
 local function strip(str)
 
@@ -81,55 +105,266 @@ local function runAsync(cmd, handleSuccess, handleFail)
     end)
 end
 
+local function tableCopy(t)
+
+    local copy = {}
+
+    for k, v in pairs(t) do copy[k] = v end
+
+    return copy
+end
+
+local function calculateTextWidth(text, fontSize)
+
+    widthOverlay.res_x, widthOverlay.res_y = 1000, 1000
+    widthOverlay.data                      = "{\\q2\\fs"..fontSize.."}"..text
+    local res                              = widthOverlay:update()
+
+    return res and res.x1 and (res.x1 - res.x0) or 0
+end
+
+local function getClipboard()
+
+    return mp.get_property("clipboard/text", "")
+end
+
+local function time2ms(uTime)
+
+    local h, m, s, cs = uTime:match("(%d+):(%d+):(%d+)%.(%d+)")
+
+    if not h then return 0 end
+
+    return ((tonumber(h) * 3600) + (tonumber(m) * 60) + tonumber(s)) * 1000 + (tonumber(cs) * 10)
+end
+
+local function ms2time(uMS)
+
+    if uMS == 0 then return "0:00:00.00" end
+
+    local tSecs = math.floor(uMS / 1000)
+    local h     = math.floor(tSecs / 3600)
+    local m     = math.floor((tSecs % 3600) / 60)
+    local s     = tSecs % 60
+    local cs    = math.floor((uMS % 1000) / 10)
+
+    return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
+end
+
+local function len(str)
+
+    local n = 0
+
+    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do n = n + 1 end
+
+    return n
+end
+
+local function sub(str,sstart,send)
+
+    local n       = 0
+    local content = ""
+
+    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+
+        if n == send    then break                end
+        if n >= sstart  then content = content..c end
+
+        n = n + 1
+    end
+
+    return content
+end
+
+local function truncate(str, maxLen)
+
+    local content      = ""
+    local lCount       = 0
+    local speakerLines = str:match("^%s*%-%s+.-%-%s+...")
+
+    if speakerLines then
+
+        str = str.."- "
+        str = str:gsub("(%-%s+)", "<>%1")
+
+        for line in str:gmatch("(%-%s+.-)<>") do
+
+            lCount = lCount + 1
+            line   = sub(line, 0, maxLen)
+
+            if lCount == 2 then line = "\\N"..line end
+
+            content = content..line
+        end
+
+        return content
+    end
+
+    if len(str) <= maxLen then return str end
+
+    str = str.." "
+
+    local breaked = false
+
+    for word in str:gmatch("[^%s]+%s") do
+
+        local wLen = len(word)
+
+        if (lCount + wLen) > (maxLen * 2 - 5) then
+
+            break
+        end
+
+        if (lCount + wLen) > maxLen and not breaked then
+
+            breaked = true
+            content = content.."\\N"
+        end
+
+        content = content..word
+        lCount  = lCount + wLen
+    end
+
+    return content
+end
+
 local function drawSidebar(mouseY)
 
-    local lineY = config.padding
-    offset      = (offset > data.totalLines) and data.totalLines or offset
+    local lineY = data.screenHeight - data.contentArea
+    offset      = (offset > data.maxOffset) and data.maxOffset or offset
     local ass   = assdraw.ass_new()
+
+    --background
 
     ass:new_event()
     ass:pos(data.videoWidth, 0)
-    ass:append(string.format("{\\bord0\\alpha&H00&\\1c&H%s&}", config.background_color))
+    ass:append(string.format("{\\bord0\\1c&H%s&}", colors.background))
     ass:draw_start()
     ass:rect_cw(0, 0, config.width, data.screenHeight)
     ass:draw_stop()
 
-    local isScroll = false
+    --no results found
 
-    if #subtitles > data.lineCount then
-
-        local barX      = data.videoWidth + config.width - config.bar_width
-        local barHeight = math.max(data.screenHeight * (data.lineCount / data.totalLines), 50)
-        local barY      = (offset / data.totalLines) * (data.screenHeight - barHeight)
+    if #subtitles == 0 then
 
         ass:new_event()
-        ass:pos(barX, barY)
-        ass:append("{\\1c&HFFFFFF&\\bord0\\alpha&H80&}")
+        ass:pos(data.videoWidth + config.padding_x, lineY + config.padding_y)
+        ass:append(string.format("{\\bord0\\an7\\b0\\1c&H%s&\\fs%s}", colors.rowText, data.bottomFontSize))
+        ass:append("No results found.")
+    end
+
+    --search
+
+    local searchBoxX, searchBoxY = data.videoWidth + config.padding_x, config.padding_y
+    local searchBoxW, searchBoxH = config.width - config.padding_x * 2, data.searchBoxHeight
+    local searchTextArea         = searchBoxW - data.searchBoxPaddingX
+    local preCursor, postCursor
+    local preCursorWidth, searchTextWidth, searchTextOffset
+
+
+    if search.enabled or search.text ~= "" then
+
+        preCursor        = sub(search.text, 0,             search.cursor)
+        postCursor       = sub(search.text, search.cursor, len(search.text))
+        preCursorWidth   = calculateTextWidth(preCursor, data.searchFontSize)
+        searchTextWidth  = calculateTextWidth(preCursor..postCursor, data.searchFontSize)
+        searchTextOffset = searchTextWidth > searchTextArea and math.max(0, math.min(preCursorWidth - searchTextArea / 2, searchTextWidth - searchTextArea)) or 0
+    end
+
+    if search.enabled then
+
+        --box
+
+        ass:new_event()
+        ass:pos(searchBoxX, searchBoxY)
+        ass:append(string.format("{\\bord0\\1c&H%s&}", colors.searchBackground))
         ass:draw_start()
-        ass:rect_cw(0, 0, config.bar_width, barHeight)
+        ass:round_rect_cw(0, 0, searchBoxW, searchBoxH, config.round, config.round)
         ass:draw_stop()
 
-        isScroll = true
+        --text
+
+       ass:new_event()
+       ass:pos(searchBoxX + data.searchBoxPaddingX - searchTextOffset, searchBoxY + data.searchBoxPaddingY)
+       ass:append(string.format("{\\clip(%s,%s,%s,%s)\\bord0\\1c&H%s&\\fs%s}", searchBoxX + data.searchBoxPaddingX, searchBoxY, searchBoxX + searchBoxW - data.searchBoxPaddingX, searchBoxY + searchBoxH, colors.searchHoverText, data.searchFontSize))
+       ass:append(preCursor..postCursor)
+
+        --cursor
+
+       ass:new_event()
+       ass:pos(searchBoxX + data.searchBoxPaddingX - 1 - searchTextOffset, config.padding_y + data.searchBoxPaddingY)
+       ass:append(string.format("{\\clip(%s,%s,%s,%s)\\bord0\\alpha&HFF&\\fs%s}", searchBoxX, searchBoxY, searchBoxX + searchBoxW, searchBoxY + searchBoxH, data.searchFontSize))
+       ass:append(preCursor..string.format("{\\alpha&H00&\\p1\\c&H%s&}m 0 0 l 1 0 l 1 %s l 0 %s{\\p0\\alpha&HFF&}", colors.searchHoverText, data.searchFontSize, data.searchFontSize)..postCursor)
+    else
+
+        --box
+
+        ass:new_event()
+        ass:pos(searchBoxX, searchBoxY)
+        ass:append(string.format("{\\bord0\\1c&H%s&\\alpha&HC8&}", colors.searchBackground))
+        ass:draw_start()
+        ass:round_rect_cw(0, 0, searchBoxW, searchBoxH, config.round, config.round)
+        ass:draw_stop()
+
+        --text
+
+        ass:new_event()
+        ass:append(string.format("{\\bord0\\1c&H%s&\\fs17}", colors.searchText))
+
+        if search.text ~= "" then
+
+            ass:pos(searchBoxX + data.searchBoxPaddingX - searchTextOffset, config.padding_y + data.searchBoxPaddingY)
+            ass:append(string.format("{\\clip(%s,%s,%s,%s)\\bord0\\1c&H%s&\\fs%s}", searchBoxX, searchBoxY, searchBoxX + searchBoxW, searchBoxY + searchBoxH, colors.searchText, data.searchFontSize))
+            ass:append(preCursor..postCursor)
+        else
+
+            ass:pos(searchBoxX + data.searchBoxPaddingX, config.padding_y + data.searchBoxPaddingY)
+            ass:append("Search...")
+        end
+
+        --icon
+
+        ass:new_event()
+        ass:pos(searchBoxX + config.width - config.padding_x * 2 - 33, config.padding_y + 7)
+        ass:append(string.format("{\\bord0\\1c&H%s&\\fs7\\p1\\fscx40\\fscy40}", colors.searchText))
+        ass:append("m 16 0 b 24 0 32 8 32 16 b 32 24 24 32 16 32 b 8 32 0 24 0 16 b 0 8 8 0 16 0 m 30 28 l 25 32 l 33 40 l 38 36 m 6 16 b 6 22 10 26 16 26 b 22 26 26 22 26 16 b 26 10 22 6 16 6 b 10 6 6 10 6 16")
     end
 
     for i = 1, data.lineCount do
 
         local selected = false
 
-        if currentIndex == (i + offset - 1) then selected = true end
+        if not search.processing and currentIndex == (i + offset - 1) then selected = true end
+
+        --border
+
+        if i > 1 then
+
+           ass:new_event()
+           ass:pos(data.videoWidth, lineY)
+           ass:append(string.format("{\\bord0\\1c&H%s&}", colors.rowBorder))
+           ass:draw_start()
+           ass:rect_cw(0, 0, config.width, data.borderHeight)
+           ass:draw_stop()
+        end
+
+        --selected
 
         if selected then
 
-            ass:new_event()
-            ass:pos(data.videoWidth, lineY - config.padding / 2)
-            ass:append(string.format("{\\bord0\\1c&H%s&}", "FFFFFF"))
-            ass:draw_start()
-            ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
-            ass:draw_stop()
+            --box
 
             ass:new_event()
-            ass:pos(data.videoWidth + 3, lineY - config.padding / 2 + data.lineHeight / 2 - 5)
-            ass:append(string.format("{\\bord0\\1c&H%s&}", "000000"))
+            ass:pos(data.videoWidth, lineY + data.borderHeight)
+            ass:append(string.format("{\\bord0\\1c&H%s&}", colors.rowSelected))
+            ass:draw_start()
+            ass:rect_cw(0, 0, config.width, data.lineHeight - data.borderHeight)
+            ass:draw_stop()
+
+            --icon
+
+            ass:new_event()
+            ass:pos(data.videoWidth + 3, lineY + data.borderHeight + data.lineHeight / 2 - 5)
+            ass:append(string.format("{\\bord0\\1c&H%s&}", colors.rowSelectedText))
             ass:draw_start()
 
             local triX, triY = 0, 0
@@ -141,49 +376,63 @@ local function drawSidebar(mouseY)
 
             --hover
 
-           if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
-
-               ass:new_event()
-               ass:pos(data.videoWidth, lineY - config.padding / 2)
-               ass:append(string.format("{\\alpha&H80&\\bord0\\1c&H%s&}", selected and "FFFFFF" or "000000"))
-               ass:draw_start()
-               ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
-               ass:draw_stop()
-           end
-
-            --pattern/background
-
-            if i % 2 == 0 then
+            if not search.processing and mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
 
                 ass:new_event()
-                ass:pos(data.videoWidth, lineY - config.padding / 2)
-                ass:append(string.format("{\\bord0\\alpha&HC8&\\1c&H%s&}", "000000"))
+                ass:pos(data.videoWidth, lineY + data.borderHeight)
+                ass:append(string.format("{\\bord0\\1c&H%s&}", selected and colors.rowSelected or colors.rowHover))
                 ass:draw_start()
-                ass:rect_cw(0, 0, isScroll and config.width - config.bar_width or config.width, data.lineHeight)
+                ass:rect_cw(0, 0, config.width, data.lineHeight - data.borderHeight)
                 ass:draw_stop()
             end
         end
 
-        --top
+        --top text
 
         ass:new_event()
-        ass:pos(data.videoWidth + config.padding, lineY)
-        ass:append(string.format("{\\bord0\\an7\\b1\\1c&H%s&\\fs%s}", selected and "000000" or "888888", data.topFontSize))
+        ass:pos(data.videoWidth + config.padding_x, lineY + config.padding_y)
+        ass:append(string.format("{\\bord0\\an7\\b1\\1c&H%s&\\fs%s}", (selected) and colors.rowSelectedText or colors.rowUpperText, data.topFontSize))
+
+        if search.processing then ass:append("{\\alpha&HC8&}") end
+
         ass:append(string.format("#%d", i + offset - 1))
 
         ass:new_event()
-        ass:pos(data.videoWidth + config.width - config.padding, lineY)
-        ass:append(string.format("{\\alpha&H00&\\b0\\an9\\bord0\\1c&H%s&\\fs%s}", selected and "000000" or "888888", data.topFontSize))
+        ass:pos(data.videoWidth + config.width - config.padding_x, lineY + config.padding_y)
+        ass:append(string.format("{\\b0\\an9\\bord0\\1c&H%s&\\fs%s}", selected and colors.rowSelectedText or colors.rowUpperText, data.topFontSize))
+
+        if search.processing then ass:append("{\\alpha&HC8&}") end
+
         ass:append(ms2time(subtitles[i + offset - 1].start * 1000))
 
-        --bottom
+        --bottom text
 
         ass:new_event()
-        ass:pos(data.videoWidth + config.padding, lineY + data.topFontSize + 5)
-        ass:append(string.format("{\\bord0\\an7\\b0\\1c&H%s&\\fs%s}", selected and "000000" or "FFFFFF", data.bottomFontSize))
+        ass:pos(data.videoWidth + config.padding_x, lineY + config.padding_y + data.topFontSize + data.lineMargin)
+        ass:append(string.format("{\\bord0\\an7\\b0\\1c&H%s&\\fs%s}", selected and colors.rowSelectedText or colors.rowText, data.bottomFontSize))
+
+        if search.processing then ass:append("{\\alpha&HC8&}") end
+
         ass:append(truncate(subtitles[i + offset - 1].text, config.max_len))
 
         lineY = lineY + data.lineHeight
+    end
+
+    --scroll
+
+    if #subtitles > data.lineCount then
+
+        lineY            = data.screenHeight - data.contentArea + data.borderHeight
+        local barX       = data.videoWidth + config.width - config.bar_width
+        local barHeight  = math.max(data.maxOffset * 0.1, config.bar_minHeight)
+        local barY       = (data.contentArea - barHeight - data.borderHeight) * ((offset - 1) / (data.maxOffset - 1))
+
+        ass:new_event()
+        ass:pos(barX, lineY + barY)
+        ass:append(string.format("{\\1c&H%s&\\bord0}", colors.scroll))
+        ass:draw_start()
+        ass:rect_cw(0, 0, config.bar_width, barHeight)
+        ass:draw_stop()
     end
 
     mp.set_osd_ass(data.screenWidth, data.screenHeight, ass.text)
@@ -191,14 +440,22 @@ end
 
 local function fillData()
 
+    data.searchBoxPaddingX              = 15
+    data.searchBoxPaddingY              = 7
+    data.searchBoxHeight                = 30
+    data.searchFontSize                 = 17
     data.topFontSize                    = 13
     data.bottomFontSize                 = 17
+    data.lineMargin                     = 5
+    data.borderHeight                   = 1
     data.screenWidth, data.screenHeight = mp.get_osd_size()
     data.videoWidth                     = data.screenWidth - config.width
-    data.lineHeight                     = data.topFontSize + data.bottomFontSize * 2 + 5 + config.padding
-    data.lineCount                      = math.floor((data.screenHeight - config.padding) / data.lineHeight)
-    data.totalLines                     = #subtitles - data.lineCount + 1
-    local gap                           = ((data.screenHeight - config.padding) - data.lineHeight * data.lineCount) / data.lineCount
+    data.lineHeight                     = data.topFontSize + data.bottomFontSize * 2 + data.lineMargin + config.padding_y * 2
+    data.contentArea                    = data.screenHeight - (data.searchBoxHeight + config.padding_y * 2)
+    data.lineCount                      = math.floor(data.contentArea / data.lineHeight)
+    data.lineCount                      = data.lineCount > #subtitles and #subtitles or data.lineCount
+    data.maxOffset                     = #subtitles - data.lineCount + 1
+    local gap                           = #subtitles ~= data.lineCount and (data.contentArea - data.lineHeight * data.lineCount) / data.lineCount or 0
     data.lineHeight                     = data.lineHeight + gap
 end
 
@@ -273,7 +530,7 @@ local function initSidebar()
     sidebarEnabled = not sidebarEnabled
 end
 
-function hash(str)
+local function hash(str)
 
     local h1, h2, h3 = 0, 0, 0
 
@@ -466,84 +723,7 @@ local function toggleSidebar()
     initSidebar()
 end
 
-function truncate(str, maxLen)
-
-    local content      = ""
-    local lCount       = 0
-    local speakerLines = str:match("^%s*%-%s+.-%-%s+...")
-
-    if speakerLines then
-
-        str = str.."- "
-        str = str:gsub("(%-%s+)", "<>%1")
-
-        for line in str:gmatch("(%-%s+.-)<>") do
-
-            lCount = lCount + 1
-            line   = sub(line, 1, config.max_len)
-
-            if lCount == 2 then line = "\\N"..line end
-
-            content = content..line
-        end
-
-        return content
-    end
-
-    if len(str) <= maxLen then return str end
-
-    str = str.." "
-
-    local breaked = false
-
-    for word in str:gmatch("[^%s]+%s") do
-
-        local wLen = len(word)
-
-        if (lCount + wLen) > (maxLen * 2) then
-
-            break
-        end
-
-        if (lCount + wLen) > maxLen and not breaked then
-
-            breaked = true
-            content = content.."\\N"
-        end
-
-        content = content..word
-        lCount  = lCount + wLen
-    end
-
-    return content
-end
-
-function len(str)
-
-    local n = 0
-
-    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do n = n + 1 end
-
-    return n
-end
-
-function sub(str,sstart,send)
-
-    local n       = 0
-    local content = ""
-
-    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-
-        n = n + 1
-
-        if n >= sstart  then content = content..c end
-        if ssend == len then break                end
-    end
-
-    return content
-end
-
-function findIndexByTime()
+local function findIndexByTime()
 
     local start = mp.get_property_number("sub-start")
     local index = 0
@@ -578,8 +758,19 @@ function findIndexByTime()
     return index
 end
 
+local function cursorInSidebarSearch()
 
-function cursorInSidebar()
+    if not sidebarEnabled then return end
+
+    local screenWidth, screenHeight = mp.get_osd_size()
+    local videoWidth                = screenWidth - config.width
+
+    local x, y = mp.get_mouse_pos()
+
+    return x >= (videoWidth + config.padding_x) and x <= (videoWidth + config.width - config.padding_x) and y >= config.padding_y and y <= (config.padding_y + data.searchBoxHeight)
+end
+
+local function cursorInSidebar()
 
     if not sidebarEnabled then return end
 
@@ -591,31 +782,167 @@ function cursorInSidebar()
     return x >= videoWidth and x <= videoWidth + config.width
 end
 
-function time2ms(uTime)
+local function searchResults()
 
-    local h, m, s, cs = uTime:match("(%d+):(%d+):(%d+)%.(%d+)")
+    if #tempSubtitles == 0 then tempSubtitles = tableCopy(subtitles) end
 
-    if not h then return 0 end
+    subtitles          = {}
+    local searchedText = search.text:lower()
+    local c            = 0
 
-    return ((tonumber(h) * 3600) + (tonumber(m) * 60) + tonumber(s)) * 1000 + (tonumber(cs) * 10)
+    for i in ipairs(tempSubtitles) do
+
+        if string.find(tempSubtitles[i].text:lower(), searchedText, 1, true) then
+
+            table.insert(subtitles, tempSubtitles[i])
+        end
+    end
+
+    fillData()
+
+    search.show       = true
+    search.processing = false
+    offset            = 1
 end
 
-function ms2time(uMS)
+local function enter()
 
-    if uMS == 0 then return "0:00:00.00" end
+    search.processing = true
 
-    local tSecs = math.floor(uMS / 1000)
-    local h     = math.floor(tSecs / 3600)
-    local m     = math.floor((tSecs % 3600) / 60)
-    local s     = tSecs % 60
-    local cs    = math.floor((uMS % 1000) / 10)
+    if search.resultTimer then search.resultTimer:kill() end
 
-    return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
+    search.resultTimer = mp.add_timeout(3, searchResults)
 end
+
+local searchBindings = {
+
+    cursorhome = {
+        key  = "home",
+        func = function ()
+
+            search.keyPressed = true
+            search.cursor     = 0
+        end,
+        opts = nil
+    },
+
+    cursorend = {
+
+        key  = "end",
+        func = function ()
+
+            search.keyPressed = true
+            search.cursor     = len(search.text)
+        end,
+        opts = nil
+    },
+
+    cursorleft = {
+        key  = "left",
+        func = function ()
+
+            search.keyPressed = true
+            search.cursor     = search.cursor - 1
+            search.cursor     = math.max(search.cursor, 0)
+        end,
+        opts = {repeatable = true}
+    },
+
+    cursorright = {
+
+        key  = "right",
+        func = function ()
+
+            search.keyPressed = true
+            local charCount   = len(search.text)
+            search.cursor     = search.cursor + 1
+            search.cursor     = math.min(search.cursor, charCount)
+        end,
+        opts = {repeatable = true}
+    },
+
+    paste = {
+
+        key  = "ctrl+v",
+        func = function ()
+
+            search.keyPressed = true
+            local charCount   = len(search.text)
+            local preCursor   = sub(search.text, 0,             search.cursor)
+            local postCursor  = sub(search.text, search.cursor, charCount)
+            local clipboard   = getClipboard()
+            search.text       = preCursor..clipboard..postCursor
+            search.cursor     = search.cursor + len(clipboard)
+
+            enter()
+        end,
+        opts = nil
+    },
+
+    deletebackward = {
+
+        key  = "bs",
+        func = function ()
+
+            search.keyPressed = true
+
+            if search.cursor == 0 then return end
+
+            local charCount  = len(search.text)
+            local preCursor  = sub(search.text, 0,             search.cursor - 1)
+            local postCursor = sub(search.text, search.cursor, charCount)
+            search.text      = preCursor..postCursor
+            search.cursor    = search.cursor - 1
+            search.cursor    = math.max(search.cursor, 0)
+
+            enter()
+        end,
+        opts = {repeatable = true}
+    },
+
+    deleteforward = {
+
+        key  = "del",
+        func = function ()
+
+            search.keyPressed = true
+            local charCount   = len(search.text)
+
+            if charCount == search.cursor then return end
+
+            local preCursor  = sub(search.text, 0,                 search.cursor)
+            local postCursor = sub(search.text, search.cursor + 1, charCount)
+            search.text      = preCursor..postCursor
+
+            enter()
+        end,
+        opts = {repeatable = true}
+    },
+
+    input = {
+
+        key  = "ANY_UNICODE",
+        func = function (info)
+
+            if info.key_text and (info.event == "press" or info.event == "down" or info.event == "repeat") then
+
+                search.keyPressed = true
+                local charCount   = len(search.text)
+                local preCursor   = sub(search.text, 0,             search.cursor)
+                local postCursor  = sub(search.text, search.cursor, charCount)
+                search.text       = preCursor..info.key_text..postCursor
+                search.cursor     = search.cursor + 1
+
+                enter()
+            end
+        end,
+        opts = {repeatable = true, complex = true}
+    }
+}
 
 mp.observe_property("sub-text", "native", function(_, text)
 
-    if sidebarEnabled and text and text ~= "" and not cursorInSidebar() then
+    if not search.processing and sidebarEnabled and text and text ~= "" and not cursorInSidebar() then
 
         local foundedIndex = findIndexByTime()
 
@@ -628,11 +955,11 @@ mp.observe_property("sub-text", "native", function(_, text)
     end
 end)
 
-mp.add_forced_key_binding("mbtn_left", "sidebarsubtitlesclick", function()
+mp.add_forced_key_binding("mbtn_left", "sidebarsubtitles_click", function()
 
-    if cursorInSidebar() then
+    if not search.processing and cursorInSidebar() then
 
-        local lineY     = config.padding
+        local lineY     = data.screenHeight - data.contentArea
         local _, mouseY =  mp.get_mouse_pos()
 
         for i = 1, data.lineCount do
@@ -650,29 +977,71 @@ mp.add_forced_key_binding("mbtn_left", "sidebarsubtitlesclick", function()
             lineY = lineY + data.lineHeight
         end
     end
-end)
 
+    if cursorInSidebarSearch() then
+
+        search.enabled    = true
+        search.keyPressed = true
+
+        for name, binding in pairs(searchBindings) do
+
+            mp.add_forced_key_binding(binding.key, "sidebarsubtitles_search"..name, binding.func, binding.opts)
+        end
+
+
+        search.timer = mp.add_periodic_timer(0.05, function()
+
+            if search.keyPressed or search.show then
+
+                drawSidebar()
+
+                search.keyPressed = false
+                search.show       = false
+            end
+        end)
+    elseif search.enabled then
+
+        search.enabled = false
+
+        if search.text == "" then
+
+            offset            = 1
+            subtitles         = tableCopy(tempSubtitles)
+            tempSubtitles     = {}
+            search.processing = false
+        end
+
+        drawSidebar()
+
+        if search.timer then search.timer:kill() end
+
+        for name in pairs(searchBindings) do
+
+            mp.remove_key_binding("sidebarsubtitles_search"..name)
+        end
+    end
+end)
 
 mp.observe_property("mouse-pos", "native", function(_, value)
 
-    if cursorInSidebar() then
+    if not search.processing and cursorInSidebar() then
 
         drawSidebar(value.y)
     end
 end)
 
-mp.add_forced_key_binding("wheel_up", "sidebarsubtitlesscrollup", function()
+mp.add_forced_key_binding("wheel_up", "sidebarsubtitles_scrollup", function()
 
-    if cursorInSidebar() then
+    if not search.processing and cursorInSidebar() then
 
         offset = offset > 1 and offset - 1 or offset
         drawSidebar()
     end
 end)
 
-mp.add_forced_key_binding("wheel_down", "sidebarsubtitlesscrolldown", function()
+mp.add_forced_key_binding("wheel_down", "sidebarsubtitles_scrolldown", function()
 
-    if cursorInSidebar() then
+    if not search.processing and cursorInSidebar() then
 
         offset = offset >= #subtitles and #subtitles or offset + 1
         drawSidebar()
