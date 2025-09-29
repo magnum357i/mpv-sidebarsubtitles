@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.2             ║
+║             v1.0.3             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -17,15 +17,17 @@ local utils   = require "mp.utils"
 
 local config  = {
 
-    width                = 300,
-    padding_x            = 20,
-    padding_y            = 10,
-    max_len              = 35,
-    fullscreen_scale     = 1.3,
-    bar_width            = 3,
-    bar_minHeight        = 50,
-    hide_loaded_subtitle = false,
-    round                = 15
+    width                  = 300,
+    padding_x              = 20,
+    padding_y              = 10,
+    max_len                = 35,
+    fullscreen_scale       = 1.3,
+    bar_width              = 3,
+    bar_minHeight          = 50,
+    hide_loaded_subtitle   = false,
+    round                  = 15,
+    sort_lines             = true,
+    remove_repeating_lines = true
 }
 
 options.read_options(config, "sidebarsubtitles")
@@ -37,7 +39,7 @@ local currentIndex   = 0
 local subtitles      = {}
 local tempSubtitles  = {}
 local sidebarEnabled = false
-local search         = {enabled = false, keyPressed = false, text = "", cursor = 0, timer = nil, resultTimer = nil, processing = false, show = false}
+local search         = {enabled = false, refresh = false, text = "", cursor = 0, timer = nil, resultTimer = nil, processing = false,}
 local data           = {}
 local customThemes   = {}
 local paths          = {
@@ -89,6 +91,17 @@ local function runCommand(args)
         capture_stderr = true,
         args           = args
     })
+end
+
+local function log(str)
+
+    if type(str) == "table" then
+
+        print(utils.format_json(str))
+    else
+
+        print(str)
+    end
 end
 
 local function runAsync(cmd, handleSuccess, handleFail)
@@ -230,7 +243,6 @@ end
 local function drawSidebar(mouseY)
 
     local lineY = data.screenHeight - data.contentArea
-    offset      = (offset > data.maxOffset) and data.maxOffset or offset
     local ass   = assdraw.ass_new()
 
     --background
@@ -329,15 +341,17 @@ local function drawSidebar(mouseY)
         ass:append("m 16 0 b 24 0 32 8 32 16 b 32 24 24 32 16 32 b 8 32 0 24 0 16 b 0 8 8 0 16 0 m 30 28 l 25 32 l 33 40 l 38 36 m 6 16 b 6 22 10 26 16 26 b 22 26 26 22 26 16 b 26 10 22 6 16 6 b 10 6 6 10 6 16")
     end
 
-    for i = 1, data.lineCount do
+    local firstRow = true
+
+    for i = offset, offset + data.lineCount - 1 do
 
         local selected = false
 
-        if not search.processing and currentIndex == (i + offset - 1) then selected = true end
+        if not search.processing and currentIndex == i then selected = true end
 
         --border
 
-        if i > 1 then
+        if not firstRow then
 
            ass:new_event()
            ass:pos(data.videoWidth, lineY)
@@ -395,7 +409,7 @@ local function drawSidebar(mouseY)
 
         if search.processing then ass:append("{\\alpha&HC8&}") end
 
-        ass:append(string.format("#%d", i + offset - 1))
+        ass:append(string.format("#%d", i))
 
         ass:new_event()
         ass:pos(data.videoWidth + config.width - config.padding_x, lineY + config.padding_y)
@@ -403,7 +417,7 @@ local function drawSidebar(mouseY)
 
         if search.processing then ass:append("{\\alpha&HC8&}") end
 
-        ass:append(ms2time(subtitles[i + offset - 1].start * 1000))
+        ass:append(string.format("%s - %s", ms2time(subtitles[i].startTime * 1000), ms2time(subtitles[i].endTime * 1000)))
 
         --bottom text
 
@@ -413,9 +427,10 @@ local function drawSidebar(mouseY)
 
         if search.processing then ass:append("{\\alpha&HC8&}") end
 
-        ass:append(truncate(subtitles[i + offset - 1].text, config.max_len))
+        ass:append(truncate(subtitles[i].text, config.max_len))
 
-        lineY = lineY + data.lineHeight
+        lineY    = lineY + data.lineHeight
+        firstRow = false
     end
 
     --scroll
@@ -454,7 +469,7 @@ local function fillData()
     data.contentArea                    = data.screenHeight - (data.searchBoxHeight + config.padding_y * 2)
     data.lineCount                      = math.floor(data.contentArea / data.lineHeight)
     data.lineCount                      = data.lineCount > #subtitles and #subtitles or data.lineCount
-    data.maxOffset                     = #subtitles - data.lineCount + 1
+    data.maxOffset                      = #subtitles - data.lineCount + 1
     local gap                           = #subtitles ~= data.lineCount and (data.contentArea - data.lineHeight * data.lineCount) / data.lineCount or 0
     data.lineHeight                     = data.lineHeight + gap
 end
@@ -519,7 +534,7 @@ local function initSidebar()
 
         togglePlayerControls()
 
-        drawSidebar(1)
+        drawSidebar()
     else
 
         mp.set_osd_ass(0, 0, "")
@@ -615,18 +630,33 @@ local function tryGetSubtitles()
 
             local t = {line:match("^Dialogue:%s([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.+)$")}
 
-            if t
-                and (not merged or merged and t[4] == "Primary")
-                and (prevLine and prevLine[2] ~= t[2] and prevLine[3] ~= t[3] and prevLine[10] ~= t[10])
-            then
+            if t then
 
-                table.insert(subtitles, {start = time2ms(t[2]) / 1000, text = strip(t[10])})
+                local deleteThis = false
+                t[10]            = strip(t[10])
+
+                if merged and t[4] ~= "Primary" then deleteThis = true end
+
+                if config.remove_repeating_lines and prevLine then
+
+                    if prevLine[10] == t[10] and (prevLine[2] == t[2] or prevLine[3] == t[2]) then deleteThis = true end
+                end
+
+                if not deleteThis then table.insert(subtitles, {startTime = time2ms(t[2]) / 1000, endTime = time2ms(t[3]) / 1000, text = t[10]}) end
 
                 prevLine = t
             end
         end
 
         if #subtitles > 0 then
+
+            if config.sort_lines then
+
+                table.sort(subtitles, function(a, b)
+
+                    return tonumber(a.startTime) < tonumber(b.startTime)
+                end)
+            end
 
             mp.osd_message("")
 
@@ -725,27 +755,44 @@ end
 
 local function findIndexByTime()
 
-    local start = mp.get_property_number("sub-start")
+    local startTime = mp.get_property_number("sub-start")
+
+    if not startTime then return 0 end
+
     local index = 0
+
+    --visible rows
 
     if data.lineCount and data.lineCount > 0 then
 
-        for i = 1, data.lineCount do
+        for i = offset, offset + data.lineCount - 1 do
 
-            if start and math.floor(subtitles[i + offset - 1].start) == math.floor(start) then
+            if math.floor(subtitles[i].startTime) == math.floor(startTime) then
 
-                index = i + offset - 1
+                index = i
 
                 break
             end
         end
+
+        if index > 0 then return index end
     end
 
-    if index > 0 then return index end
+    --fhe first row not shown on screen at the current offset
+
+    if subtitles[offset + data.lineCount] and math.floor(subtitles[offset + data.lineCount].startTime) == math.floor(startTime) then
+
+        index  = offset + data.lineCount
+        offset = index
+
+        return index
+    end
+
+    --last resort, searching from the beginning
 
     for i in ipairs(subtitles) do
 
-        if start and math.floor(subtitles[i].start) == math.floor(start) then
+        if math.floor(subtitles[i].startTime) == math.floor(startTime) then
 
             index = i
 
@@ -762,24 +809,18 @@ local function cursorInSidebarSearch()
 
     if not sidebarEnabled then return end
 
-    local screenWidth, screenHeight = mp.get_osd_size()
-    local videoWidth                = screenWidth - config.width
-
     local x, y = mp.get_mouse_pos()
 
-    return x >= (videoWidth + config.padding_x) and x <= (videoWidth + config.width - config.padding_x) and y >= config.padding_y and y <= (config.padding_y + data.searchBoxHeight)
+    return x >= (data.videoWidth + config.padding_x) and x <= (data.videoWidth + config.width - config.padding_x) and y >= config.padding_y and y <= (config.padding_y + data.searchBoxHeight)
 end
 
 local function cursorInSidebar()
 
     if not sidebarEnabled then return end
 
-    local screenWidth, screenHeight = mp.get_osd_size()
-    local videoWidth                = screenWidth - config.width
-
     local x, y = mp.get_mouse_pos()
 
-    return x >= videoWidth and x <= videoWidth + config.width
+    return x >= data.videoWidth and x <= data.videoWidth + config.width
 end
 
 local function searchResults()
@@ -798,11 +839,13 @@ local function searchResults()
         end
     end
 
-    fillData()
-
-    search.show       = true
     search.processing = false
     offset            = 1
+
+    fillData()
+    drawSidebar()
+
+    if #tempSubtitles == #subtitles then tempSubtitles = {} end
 end
 
 local function enter()
@@ -820,8 +863,8 @@ local searchBindings = {
         key  = "home",
         func = function ()
 
-            search.keyPressed = true
-            search.cursor     = 0
+            search.refresh = true
+            search.cursor  = 0
         end,
         opts = nil
     },
@@ -831,8 +874,8 @@ local searchBindings = {
         key  = "end",
         func = function ()
 
-            search.keyPressed = true
-            search.cursor     = len(search.text)
+            search.refresh = true
+            search.cursor  = len(search.text)
         end,
         opts = nil
     },
@@ -841,9 +884,9 @@ local searchBindings = {
         key  = "left",
         func = function ()
 
-            search.keyPressed = true
-            search.cursor     = search.cursor - 1
-            search.cursor     = math.max(search.cursor, 0)
+            search.refresh = true
+            search.cursor  = search.cursor - 1
+            search.cursor  = math.max(search.cursor, 0)
         end,
         opts = {repeatable = true}
     },
@@ -853,10 +896,10 @@ local searchBindings = {
         key  = "right",
         func = function ()
 
-            search.keyPressed = true
-            local charCount   = len(search.text)
-            search.cursor     = search.cursor + 1
-            search.cursor     = math.min(search.cursor, charCount)
+            search.refresh  = true
+            local charCount = len(search.text)
+            search.cursor   = search.cursor + 1
+            search.cursor   = math.min(search.cursor, charCount)
         end,
         opts = {repeatable = true}
     },
@@ -866,13 +909,13 @@ local searchBindings = {
         key  = "ctrl+v",
         func = function ()
 
-            search.keyPressed = true
-            local charCount   = len(search.text)
-            local preCursor   = sub(search.text, 0,             search.cursor)
-            local postCursor  = sub(search.text, search.cursor, charCount)
-            local clipboard   = getClipboard()
-            search.text       = preCursor..clipboard..postCursor
-            search.cursor     = search.cursor + len(clipboard)
+            search.refresh   = true
+            local charCount  = len(search.text)
+            local preCursor  = sub(search.text, 0,             search.cursor)
+            local postCursor = sub(search.text, search.cursor, charCount)
+            local clipboard  = getClipboard()
+            search.text      = preCursor..clipboard..postCursor
+            search.cursor    = search.cursor + len(clipboard)
 
             enter()
         end,
@@ -884,7 +927,7 @@ local searchBindings = {
         key  = "bs",
         func = function ()
 
-            search.keyPressed = true
+            search.refresh = true
 
             if search.cursor == 0 then return end
 
@@ -905,8 +948,8 @@ local searchBindings = {
         key  = "del",
         func = function ()
 
-            search.keyPressed = true
-            local charCount   = len(search.text)
+            search.refresh  = true
+            local charCount = len(search.text)
 
             if charCount == search.cursor then return end
 
@@ -926,12 +969,12 @@ local searchBindings = {
 
             if info.key_text and (info.event == "press" or info.event == "down" or info.event == "repeat") then
 
-                search.keyPressed = true
-                local charCount   = len(search.text)
-                local preCursor   = sub(search.text, 0,             search.cursor)
-                local postCursor  = sub(search.text, search.cursor, charCount)
-                search.text       = preCursor..info.key_text..postCursor
-                search.cursor     = search.cursor + 1
+                search.refresh   = true
+                local charCount  = len(search.text)
+                local preCursor  = sub(search.text, 0,             search.cursor)
+                local postCursor = sub(search.text, search.cursor, charCount)
+                search.text      = preCursor..info.key_text..postCursor
+                search.cursor    = search.cursor + 1
 
                 enter()
             end
@@ -962,14 +1005,13 @@ mp.add_forced_key_binding("mbtn_left", "sidebarsubtitles_click", function()
         local lineY     = data.screenHeight - data.contentArea
         local _, mouseY =  mp.get_mouse_pos()
 
-        for i = 1, data.lineCount do
+        for i = offset, offset + data.lineCount - 1 do
 
             if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
 
-                local index  = offset + i - 1
-                currentIndex = index
+                currentIndex = i
 
-                mp.commandv("seek", subtitles[index].start + 0.01, "absolute+exact")
+                mp.commandv("seek", subtitles[i].startTime + 0.01, "absolute+exact")
 
                 drawSidebar()
             end
@@ -980,40 +1022,30 @@ mp.add_forced_key_binding("mbtn_left", "sidebarsubtitles_click", function()
 
     if cursorInSidebarSearch() then
 
-        search.enabled    = true
-        search.keyPressed = true
+        search.enabled = true
+        search.refresh = true
 
         for name, binding in pairs(searchBindings) do
 
             mp.add_forced_key_binding(binding.key, "sidebarsubtitles_search"..name, binding.func, binding.opts)
         end
 
-
         search.timer = mp.add_periodic_timer(0.05, function()
 
-            if search.keyPressed or search.show then
+            if search.refresh then
 
                 drawSidebar()
 
-                search.keyPressed = false
-                search.show       = false
+                search.refresh = false
             end
         end)
     elseif search.enabled then
 
         search.enabled = false
 
-        if search.text == "" then
-
-            offset            = 1
-            subtitles         = tableCopy(tempSubtitles)
-            tempSubtitles     = {}
-            search.processing = false
-        end
+        if search.timer then search.timer:kill() end
 
         drawSidebar()
-
-        if search.timer then search.timer:kill() end
 
         for name in pairs(searchBindings) do
 
@@ -1034,7 +1066,8 @@ mp.add_forced_key_binding("wheel_up", "sidebarsubtitles_scrollup", function()
 
     if not search.processing and cursorInSidebar() then
 
-        offset = offset > 1 and offset - 1 or offset
+        if offset > 1 then offset = offset - 1 end
+
         drawSidebar()
     end
 end)
@@ -1043,7 +1076,8 @@ mp.add_forced_key_binding("wheel_down", "sidebarsubtitles_scrolldown", function(
 
     if not search.processing and cursorInSidebar() then
 
-        offset = offset >= #subtitles and #subtitles or offset + 1
+        if data.maxOffset and offset < data.maxOffset then offset = offset + 1 end
+
         drawSidebar()
     end
 end)
