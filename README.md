@@ -4,7 +4,7 @@
 A plugin I made just for my own fun. You can see the subtitle content in the sidebar. This repository was created as a backup and in case it might help others.
 
 # Installation
-Just put `sidebarsubtitles.lua` into your **scripts** directory, and it will work.
+Just put `sidebarsubtitles` folder into your **scripts** directory, and it will work.
 
 | Supported Themes        |
 |-------------------------|

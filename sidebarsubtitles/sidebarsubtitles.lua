@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.3             ║
+║             v1.0.4             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -14,16 +14,16 @@ local mp      = require 'mp'
 local assdraw = require 'mp.assdraw'
 local options = require 'mp.options'
 local utils   = require "mp.utils"
+local utf8    = require 'fastutf8'
 
 local config  = {
 
     width                  = 300,
-    padding_x              = 20,
-    padding_y              = 10,
+    padding_x              = 14,
+    padding_y              = 7,
     max_len                = 35,
-    fullscreen_scale       = 1.3,
     bar_width              = 3,
-    bar_minHeight          = 50,
+    bar_min_height         = 50,
     hide_loaded_subtitle   = false,
     round                  = 15,
     sort_lines             = true,
@@ -63,6 +63,7 @@ local colors         = {
     searchText         = "888888",
     searchHoverText    = "000000",
     searchSelectedText = "00FF00",
+    highlight          = "00FFFF",
     scroll             = "888888"
 }
 
@@ -72,11 +73,11 @@ widthOverlay.hidden         = true
 
 local function strip(str)
 
-    str = str:gsub("%{.-%}", "")
-    str = str:gsub("\\[Nnh]", " ")
-    str = str:gsub("%s+", " ")
-    str = str:gsub("^%s+", "")
-    str = str:gsub("%s+$", "")
+    str = str
+    :gsub("%{.-%}", "")
+    :gsub("\\[Nnh]", " ")
+    :gsub("%s+", " ")
+    :gsub("^%s*(.-)%s*$", "%1")
 
     return str
 end
@@ -129,11 +130,11 @@ end
 
 local function calculateTextWidth(text, fontSize)
 
-    widthOverlay.res_x, widthOverlay.res_y = 1000, 1000
-    widthOverlay.data                      = "{\\q2\\fs"..fontSize.."}"..text
+    widthOverlay.res_x, widthOverlay.res_y = data.screenWidth, data.screenHeight
+    widthOverlay.data                      = "{\\bord0\\shad0\\b0\\fs"..fontSize.."}"..text
     local res                              = widthOverlay:update()
 
-    return res and res.x1 and (res.x1 - res.x0) or 0
+    return (res and res.x1) and (res.x1 - res.x0) or 0
 end
 
 local function getClipboard()
@@ -163,78 +164,171 @@ local function ms2time(uMS)
     return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
 end
 
-local function len(str)
+local function hash(str)
 
-    local n = 0
+    local h1, h2, h3 = 0, 0, 0
 
-    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do n = n + 1 end
+    for i = 1, #str do
 
-    return n
+        local b = str:byte(i)
+
+        h1 = (h1 * 31 + b) % 2^32
+        h2 = (h2 * 37 + b) % 2^32
+        h3 = (h3 * 41 + b) % 2^32
+    end
+
+    return string.format("%08x%08x%08x", h1, h2, h3)
 end
 
-local function sub(str,sstart,send)
+local function getPath(key)
+
+    paths.hash = paths.hash or hash(mp.get_property("path"))
+
+    local fullPath
+
+    if key == "cache" then
+
+        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash)
+    elseif key == "subtitlefile" then
+
+        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash..seperator..paths.filename:gsub("<id>", mp.get_property_number("sid", 0))..".ass")
+    elseif key == "mergedfile" then
+
+        fullPath = utils.join_path(paths.temp, "mpvdualsubtitles"..seperator..paths.hash..seperator.."merged.ass")
+    end
+
+    fullPath = fullPath:gsub("\\", "/")
+    fullPath = mp.command_native({'expand-path', fullPath})
+
+    return fullPath
+end
+
+local function truncate(str, breakingPoint)
+
+    if not breakingPoint and config.max_len > utf8.len(str) then return str end
+
+    local n         = 0
+    local inTags    = false
+    local breaked   = false
+    local chars     = {}
+    local lastSpace = 0
+    local k         = 0
+
+    for c in utf8.chars(str) do table.insert(chars, c) end
+
+    local deleteThis = false
+    local l          = 1
+
+    for i in ipairs(chars) do
+
+        if chars[i] == "{" then inTags = true end
+
+        if not inTags then
+
+            k = k + 1
+
+            if breakingPoint and breakingPoint > 0 then
+
+                if k == config.max_len + 1 then deleteThis = true end
+
+                if k == breakingPoint and l == 1 then
+
+                    deleteThis = false
+                    k          = 1
+                    l          = l + 1
+                end
+            else
+
+                if k == config.max_len + 1 then
+
+                    if l == 1 then k = 1 end
+
+                    l = l + 1
+                end
+            end
+
+            if l > 2 then deleteThis = true end
+
+            if not deleteThis then
+
+                if l < 3 and chars[i] == " " then lastSpace = i end
+
+                if k == 1 and l == 2 then
+
+                    if chars[i] == "-" then
+
+                        chars[i] = "\\N"..chars[i]
+                    else
+
+                        if chars[i] == " " or (chars[i + 1] and chars[i + 1] == " ") then
+
+                            chars[i] = chars[i].."\\N"
+                        else
+
+                            if lastSpace > 0 then
+
+                                k                = k + (i - lastSpace + 1)
+                                chars[lastSpace] = chars[lastSpace].."\\N"
+                            else
+
+                                chars[i] = chars[i].."\\N"
+                            end
+                        end
+                    end
+                end
+            else
+
+                chars[i] = ""
+            end
+
+            --print("i="..i.." | k="..k.." | l="..l.." | lastSpace="..lastSpace..' | char="'..chars[i]..'"')
+        end
+
+        if chars[i] and chars[i] == "}" then inTags = false end
+    end
+
+    return table.concat(chars, "")
+end
+
+local function highlighter(str, selected)
+
+    if search.text == "" or search.processing then return str end
+
+    text               = str:lower()
+    local searchedText = search.text:lower()
+    local matches      = {}
+
+    for si, li in utf8.gfind(text, searchedText) do
+
+        table.insert(matches, {startIndex = si, lastIndex = li})
+    end
+
+    log(matches)
+
+
+    if #matches == 0 then return str end
 
     local n       = 0
+    local m       = 1
     local content = ""
 
-    for c in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+    for c in utf8.chars(str) do
 
-        if n == send    then break                end
-        if n >= sstart  then content = content..c end
+        n              = n + 1
+        local preTags  = ""
+        local postTags = ""
 
-        n = n + 1
-    end
+        if matches[m].startIndex == n then
 
-    return content
-end
+            preTags = string.format("{\\c&H%s&}", colors.highlight)
+        elseif matches[m].lastIndex == n then
 
-local function truncate(str, maxLen)
+            postTags = string.format("{\\c&H%s&}", selected and colors.rowSelectedText or colors.rowText)
 
-    local content      = ""
-    local lCount       = 0
-    local speakerLines = str:match("^%s*%-%s+.-%-%s+...")
-
-    if speakerLines then
-
-        str = str.."- "
-        str = str:gsub("(%-%s+)", "<>%1")
-
-        for line in str:gmatch("(%-%s+.-)<>") do
-
-            lCount = lCount + 1
-            line   = sub(line, 0, maxLen)
-
-            if lCount == 2 then line = "\\N"..line end
-
-            content = content..line
+            if matches[m + 1] then m = m + 1 end
         end
 
-        return content
-    end
-
-    if len(str) <= maxLen then return str end
-
-    str = str.." "
-
-    local breaked = false
-
-    for word in str:gmatch("[^%s]+%s") do
-
-        local wLen = len(word)
-
-        if (lCount + wLen) > (maxLen * 2 - 5) then
-
-            break
-        end
-
-        if (lCount + wLen) > maxLen and not breaked then
-
-            breaked = true
-            content = content.."\\N"
-        end
-
-        content = content..word
-        lCount  = lCount + wLen
+        content = content..preTags..c..postTags
     end
 
     return content
@@ -275,8 +369,8 @@ local function drawSidebar(mouseY)
 
     if search.enabled or search.text ~= "" then
 
-        preCursor        = sub(search.text, 0,             search.cursor)
-        postCursor       = sub(search.text, search.cursor, len(search.text))
+        preCursor        = search.cursor == 0 and "" or utf8.sub(search.text, 1, search.cursor)
+        postCursor       = utf8.sub(search.text, search.cursor + 1, 0)
         preCursorWidth   = calculateTextWidth(preCursor, data.searchFontSize)
         searchTextWidth  = calculateTextWidth(preCursor..postCursor, data.searchFontSize)
         searchTextOffset = searchTextWidth > searchTextArea and math.max(0, math.min(preCursorWidth - searchTextArea / 2, searchTextWidth - searchTextArea)) or 0
@@ -419,6 +513,9 @@ local function drawSidebar(mouseY)
 
         ass:append(string.format("%s - %s", ms2time(subtitles[i].startTime * 1000), ms2time(subtitles[i].endTime * 1000)))
 
+        local text          = subtitles[i].text
+        local breakingPoint = utf8.find(text, "...%-%s")
+
         --bottom text
 
         ass:new_event()
@@ -427,7 +524,10 @@ local function drawSidebar(mouseY)
 
         if search.processing then ass:append("{\\alpha&HC8&}") end
 
-        ass:append(truncate(subtitles[i].text, config.max_len))
+        text = highlighter(text, selected)
+        text = truncate(text, breakingPoint and breakingPoint + 3 or breakingPoint)
+
+        ass:append(text)
 
         lineY    = lineY + data.lineHeight
         firstRow = false
@@ -439,7 +539,7 @@ local function drawSidebar(mouseY)
 
         lineY            = data.screenHeight - data.contentArea + data.borderHeight
         local barX       = data.videoWidth + config.width - config.bar_width
-        local barHeight  = math.max(data.maxOffset * 0.1, config.bar_minHeight)
+        local barHeight  = math.max(data.maxOffset * 0.1, config.bar_min_height)
         local barY       = (data.contentArea - barHeight - data.borderHeight) * ((offset - 1) / (data.maxOffset - 1))
 
         ass:new_event()
@@ -455,6 +555,9 @@ end
 
 local function fillData()
 
+    local mergedFile                    = io.open(getPath("mergedfile"), "r")
+    local currentTitle                  = mp.get_property_native("current-tracks/sub/title", "")
+    data.merged                         = (mergedFile and currentTitle == "merged.ass")
     data.searchBoxPaddingX              = 15
     data.searchBoxPaddingY              = 7
     data.searchBoxHeight                = 30
@@ -545,55 +648,13 @@ local function initSidebar()
     sidebarEnabled = not sidebarEnabled
 end
 
-local function hash(str)
-
-    local h1, h2, h3 = 0, 0, 0
-
-    for i = 1, #str do
-
-        local b = str:byte(i)
-
-        h1 = (h1 * 31 + b) % 2^32
-        h2 = (h2 * 37 + b) % 2^32
-        h3 = (h3 * 41 + b) % 2^32
-    end
-
-    return string.format("%08x%08x%08x", h1, h2, h3)
-end
-
-local function getPath(key)
-
-    paths.hash = paths.hash or hash(mp.get_property("path"))
-
-    local fullPath
-
-    if key == "cache" then
-
-        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash)
-    elseif key == "subtitlefile" then
-
-        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash..seperator..paths.filename:gsub("<id>", mp.get_property_number("sid", 0))..".ass")
-    elseif key == "mergedfile" then
-
-        fullPath = utils.join_path(paths.temp, "mpvdualsubtitles"..seperator..paths.hash..seperator.."merged.ass")
-    end
-
-    fullPath = fullPath:gsub("\\", "/")
-    fullPath = mp.command_native({'expand-path', fullPath})
-
-    return fullPath
-end
-
 local function tryGetSubtitles()
 
-    local merged = false
     local file
 
-    file = io.open(getPath("mergedfile"), "r")
+    if data.merged then
 
-    if file then
-
-        merged = true
+        file = io.open(getPath("mergedfile"), "r")
     else
 
         local currentSubtitle = mp.get_property_native("current-tracks/sub", "")
@@ -635,7 +696,7 @@ local function tryGetSubtitles()
                 local deleteThis = false
                 t[10]            = strip(t[10])
 
-                if merged and t[4] ~= "Primary" then deleteThis = true end
+                if data.merged and t[4] ~= "Primary" then deleteThis = true end
 
                 if config.remove_repeating_lines and prevLine then
 
@@ -875,7 +936,7 @@ local searchBindings = {
         func = function ()
 
             search.refresh = true
-            search.cursor  = len(search.text)
+            search.cursor  = utf8.len(search.text)
         end,
         opts = nil
     },
@@ -897,7 +958,7 @@ local searchBindings = {
         func = function ()
 
             search.refresh  = true
-            local charCount = len(search.text)
+            local charCount = utf8.len(search.text)
             search.cursor   = search.cursor + 1
             search.cursor   = math.min(search.cursor, charCount)
         end,
@@ -910,12 +971,11 @@ local searchBindings = {
         func = function ()
 
             search.refresh   = true
-            local charCount  = len(search.text)
-            local preCursor  = sub(search.text, 0,             search.cursor)
-            local postCursor = sub(search.text, search.cursor, charCount)
+            local preCursor  = utf8.sub(search.text, 1,                 search.cursor)
+            local postCursor = utf8.sub(search.text, search.cursor + 1, 0)
             local clipboard  = getClipboard()
             search.text      = preCursor..clipboard..postCursor
-            search.cursor    = search.cursor + len(clipboard)
+            search.cursor    = search.cursor + utf8.len(clipboard)
 
             enter()
         end,
@@ -931,12 +991,11 @@ local searchBindings = {
 
             if search.cursor == 0 then return end
 
-            local charCount  = len(search.text)
-            local preCursor  = sub(search.text, 0,             search.cursor - 1)
-            local postCursor = sub(search.text, search.cursor, charCount)
-            search.text      = preCursor..postCursor
             search.cursor    = search.cursor - 1
             search.cursor    = math.max(search.cursor, 0)
+            local preCursor  = search.cursor == 0 and "" or utf8.sub(search.text, 1, search.cursor)
+            local postCursor = utf8.sub(search.text, search.cursor + 2, 0)
+            search.text      = preCursor..postCursor
 
             enter()
         end,
@@ -949,12 +1008,12 @@ local searchBindings = {
         func = function ()
 
             search.refresh  = true
-            local charCount = len(search.text)
+            local charCount = utf8.len(search.text)
 
             if charCount == search.cursor then return end
 
-            local preCursor  = sub(search.text, 0,                 search.cursor)
-            local postCursor = sub(search.text, search.cursor + 1, charCount)
+            local preCursor  = search.cursor == 0 and "" or utf8.sub(search.text, 1, search.cursor)
+            local postCursor = utf8.sub(search.text, search.cursor + 2, 0)
             search.text      = preCursor..postCursor
 
             enter()
@@ -970,11 +1029,19 @@ local searchBindings = {
             if info.key_text and (info.event == "press" or info.event == "down" or info.event == "repeat") then
 
                 search.refresh   = true
-                local charCount  = len(search.text)
-                local preCursor  = sub(search.text, 0,             search.cursor)
-                local postCursor = sub(search.text, search.cursor, charCount)
-                search.text      = preCursor..info.key_text..postCursor
-                search.cursor    = search.cursor + 1
+                local charCount  = utf8.len(search.text)
+
+                if charCount == 0 then
+
+                    search.text      = info.key_text
+                else
+
+                    local preCursor  = utf8.sub(search.text, 1,                 search.cursor)
+                    local postCursor = utf8.sub(search.text, search.cursor + 1, 0)
+                    search.text      = preCursor..info.key_text..postCursor
+                end
+
+                search.cursor = search.cursor + 1
 
                 enter()
             end
@@ -983,7 +1050,7 @@ local searchBindings = {
     }
 }
 
-mp.observe_property("sub-text", "native", function(_, text)
+mp.observe_property("sub-text/ass", "native", function(_, text)
 
     if not search.processing and sidebarEnabled and text and text ~= "" and not cursorInSidebar() then
 
@@ -1084,7 +1151,11 @@ end)
 
 mp.observe_property("sid", "number", function(_, value)
 
-    if value and value > 0 then subtitles = {} end
+    if sidebarEnabled then toggleSidebar() end
+
+    subtitles     = {}
+    search.text   = ""
+    search.cursor = 0
 end)
 
 mp.add_key_binding("h", "sidebarsubtitles", toggleSidebar)
