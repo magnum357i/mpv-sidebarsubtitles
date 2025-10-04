@@ -303,9 +303,6 @@ local function highlighter(str, selected)
         table.insert(matches, {startIndex = si, lastIndex = li})
     end
 
-    log(matches)
-
-
     if #matches == 0 then return str end
 
     local n       = 0
