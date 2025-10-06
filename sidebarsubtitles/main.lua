@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.5             ║
+║             v1.0.6             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -626,14 +626,14 @@ local function initSidebar()
         input.init()
         input.font_size = data.searchFontSize
 
-        setBindings()
+        setBindings("sidebar")
         togglePlayerControls()
         drawSidebar()
     else
 
         input.reset()
 
-        unsetBindings()
+        unsetBindings("sidebar")
         updateOverlay("", 0, 0)
         togglePlayerControls()
     end
@@ -948,6 +948,8 @@ local function bindingList(section)
                         search.enabled = true
                         search.refresh = true
 
+                        setBindings("search")
+
                         search.timer = mp.add_periodic_timer(0.05, function()
 
                             if search.refresh then
@@ -960,6 +962,8 @@ local function bindingList(section)
                     elseif search.enabled then
 
                         search.enabled = false
+
+                        unsetBindings("search")
 
                         if search.timer then search.timer:kill() end
 
@@ -1015,16 +1019,14 @@ local function bindingList(section)
     end
 end
 
-function setBindings()
+function setBindings(section)
 
-    for name, binding in pairs(bindingList("sidebar")) do mp.add_forced_key_binding(binding.key, "sidebarsubtitles_sidebar"..name, binding.func, binding.opts) end
-    for name, binding in pairs(bindingList("search")) do mp.add_forced_key_binding(binding.key, "sidebarsubtitles_search"..name, binding.func, binding.opts) end
+    for name, binding in pairs(bindingList(section)) do mp.add_forced_key_binding(binding.key, "sidebarsubtitles_"..section..name, binding.func, binding.opts) end
 end
 
-function unsetBindings()
+function unsetBindings(section)
 
-    for name in pairs(bindingList("sidebar")) do mp.remove_key_binding("sidebarsubtitles_sidebar"..name) end
-    for name in pairs(bindingList("search")) do mp.remove_key_binding("sidebarsubtitles_search"..name) end
+    for name in pairs(bindingList(section)) do mp.remove_key_binding("sidebarsubtitles_"..section..name) end
 end
 
 local function reset()
