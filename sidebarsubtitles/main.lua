@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.6             ║
+║             v1.0.7             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -18,19 +18,18 @@ local utf8            = require 'fastutf8'
 local input           = require 'input'
 local config          = {
 
-    width                  = 300,
+    width                  = 315,
     padding_x              = 14,
     padding_y              = 7,
-    max_len                = 35,
+    max_len                = 38,
     bar_width              = 3,
     bar_min_height         = 50,
     hide_loaded_subtitle   = false,
     round                  = 15,
     sort_lines             = true,
-    remove_repeating_lines = true
+    remove_repeating_lines = true,
+    use_timestamp          = false
 }
-local isWindows       = package.config:sub(1, 1) ~= '/'
-local seperator       = isWindows and "//" or "\\"
 local offset          = 1
 local currentIndex    = 0
 local subtitles       = {}
@@ -38,14 +37,8 @@ local tempSubtitles   = {}
 local sidebarEnabled  = false
 local search          = {enabled = false, refresh = false, timer = nil, resultTimer = nil, processing = false,}
 local data            = {}
+local currentSubtitle = {}
 local customThemes    = {}
-local paths           = {
-
-    hash        = nil,
-    temp        = os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp",
-    cacheFolder = "mpvsidebarsubtitles",
-    filename    = "<id>"
-}
 local colors          = {
 
     background       = "161616",
@@ -64,12 +57,39 @@ local overlay         = mp.create_osd_overlay("ass-events")
 
 options.read_options(config, "sidebarsubtitles")
 
+local function getSubtitleInfo(subtitleType)
+
+    local currentSubId = 0
+
+    if subtitleType == "primary" then
+
+        currentSubId = mp.get_property_number("sid", 0)
+    elseif subtitleType == "secondary" then
+
+        currentSubId = mp.get_property_number("secondary-sid", 0)
+    end
+
+    if currentSubId == 0 then return nil end
+
+    local tracks = mp.get_property_native("track-list")
+
+    for _, track in ipairs(tracks) do
+
+        if track.type == "sub" and track.id == currentSubId then
+
+            return track
+        end
+    end
+end
+
 local function assColor(rgbColor)
 
     local r, g, b = rgbColor:sub(1, 2), rgbColor:sub(3, 4), rgbColor:sub(5, 6)
 
     return b..g..r
 end
+
+for key in pairs(colors) do colors[key] = assColor(colors[key]) end
 
 local function strip(str)
 
@@ -166,18 +186,37 @@ local function hash(str)
     return string.format("%08x%08x%08x", h1, h2, h3)
 end
 
+local function reset()
+
+    data            = {}
+    subtitles       = {}
+    tempSubtitles   = {}
+    offset          = 1
+    currentIndex    = 0
+    currentSubtitle = {}
+end
+
 local function getPath(key)
 
-    paths.hash = paths.hash or hash(mp.get_property("path"))
-
     local fullPath
+    local isWindows = package.config:sub(1, 1) ~= '/'
+    local seperator = isWindows and "//" or "\\"
+    local paths = {
+
+        hash        = nil,
+        temp        = os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp",
+        cacheFolder = "mpvsidebarsubtitles",
+        filename    = "<id>-<lang>"
+    }
+
+    paths.hash = paths.hash or hash(mp.get_property("path"))
 
     if key == "cache" then
 
         fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash)
     elseif key == "subtitlefile" then
 
-        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash..seperator..paths.filename:gsub("<id>", mp.get_property_number("sid", 0))..".ass")
+        fullPath = utils.join_path(paths.temp, paths.cacheFolder..seperator..paths.hash..seperator..paths.filename:gsub("<id>", currentSubtitle.id):gsub("<lang>", currentSubtitle.lang)..".ass")
     elseif key == "mergedfile" then
 
         fullPath = utils.join_path(paths.temp, "mpvdualsubtitles"..seperator..paths.hash..seperator.."merged.ass")
@@ -280,8 +319,8 @@ local function highlighter(str, selected)
 
     if input.get_text() == "" or search.processing then return str end
 
-    text               = str:lower()
-    local searchedText = input.get_text():lower()
+    text               = utf8.lower(str)
+    local searchedText = utf8.lower(input.get_text())
     local matches      = {}
 
     for si, li in utf8.gfind(text, searchedText) do
@@ -304,10 +343,13 @@ local function highlighter(str, selected)
         if matches[m].startIndex == n then
 
             preTags = string.format("{\\c&H%s&}", colors.highlight)
+
+            if selected then preTags = preTags.."{\\bord1\\3c&H000000&\\blur1}" end
         elseif matches[m].lastIndex == n then
 
             postTags = string.format("{\\c&H%s&}", selected and colors.rowSelectedText or colors.rowText)
 
+            if selected then postTags = postTags.."{\\bord0\\blur0}" end
             if matches[m + 1] then m = m + 1 end
         end
 
@@ -329,12 +371,25 @@ local function updateOverlay(content, x, y)
     overlay:update()
 end
 
+local function convertTime(time)
+
+    time = ms2time(time * 1000)
+
+    if not config.use_timestamp then
+
+        time = time:gsub("^0:", "")
+        time = time:gsub("^0", "")
+        time = time:gsub("%.%d+", "")
+        time = time:gsub(":", ".")
+    end
+
+    return time
+end
+
 local function drawSidebar(mouseY)
 
-    local start = mp.get_time()
-
-    local lineY = data.screenHeight - data.contentArea
     local ass   = assdraw.ass_new()
+    local lineY = data.screenHeight - data.contentArea
 
     --background
 
@@ -499,7 +554,7 @@ local function drawSidebar(mouseY)
 
         if search.processing then ass:append("{\\alpha&HC8&}") end
 
-        ass:append(string.format("%s - %s", ms2time(subtitles[i].startTime * 1000), ms2time(subtitles[i].endTime * 1000)))
+        ass:append(string.format("%s - %s", convertTime(subtitles[i].startTime), convertTime(subtitles[i].endTime)))
 
         --bottom text
 
@@ -537,15 +592,11 @@ local function drawSidebar(mouseY)
         ass:draw_stop()
     end
 
-
     updateOverlay(ass.text)
 end
 
 local function fillData()
 
-    local mergedFile                    = io.open(getPath("mergedfile"), "r")
-    local currentTitle                  = mp.get_property_native("current-tracks/sub/title", "")
-    data.merged                         = (mergedFile and currentTitle == "merged.ass")
     data.searchBoxPaddingX              = 20
     data.searchBoxPaddingY              = 7
     data.searchBoxHeight                = 30
@@ -580,13 +631,11 @@ local function detectUOSC()
     return false
 end
 
-local function togglePlayerControls(mode)
+local function togglePlayerControls()
 
     if defaultSubMargin == nil then defaultSubMargin = mp.get_property("sub-use-margins") end
 
     if sidebarEnabled then
-
-        if config.hide_loaded_subtitle then mp.set_property_native("sub-visibility", "yes") end
 
         mp.set_property("sub-use-margins", defaultSubMargin)
         mp.commandv("set", "video-margin-ratio-right", 0)
@@ -600,8 +649,6 @@ local function togglePlayerControls(mode)
             mp.command("script-message osc-visibility auto")
         end
     else
-
-        if config.hide_loaded_subtitle then mp.set_property_native("sub-visibility", "no") end
 
         mp.set_property("sub-use-margins", "no")
         mp.commandv("set", "video-margin-ratio-right", config.width / data.screenWidth)
@@ -619,9 +666,15 @@ end
 
 local function initSidebar()
 
-    fillData()
+    local overrides   = mp.get_property("sub-ass-style-overrides")
+    local hidePrimary = "Primary.AlphaLevel=255"
 
     if not sidebarEnabled then
+
+        utf8.enable_case_mapping()
+        utf8.set_locale(currentSubtitle.lang)
+
+        fillData()
 
         input.init()
         input.font_size = data.searchFontSize
@@ -629,13 +682,44 @@ local function initSidebar()
         setBindings("sidebar")
         togglePlayerControls()
         drawSidebar()
+
+        if config.hide_loaded_subtitle then
+
+            if currentSubtitle.title == "merged.ass" then
+
+                overrides = (overrides == "") and hidePrimary or overrides..","..hidePrimary
+
+                mp.set_property("sub-ass-style-overrides", overrides)
+            else
+
+                mp.set_property_native(currentSubtitle.group == "p" and "sub-visibility" or "secondary-sub-visibility", "no")
+            end
+        end
     else
 
         input.reset()
+        utf8.reset()
 
         unsetBindings("sidebar")
         updateOverlay("", 0, 0)
         togglePlayerControls()
+
+        if config.hide_loaded_subtitle then
+
+            if currentSubtitle.title == "merged.ass" then
+
+                overrides = overrides:gsub(",?"..hidePrimary:gsub("%.", "%%."), "")
+
+                mp.set_property("sub-ass-style-overrides", overrides)
+            else
+
+                mp.set_property_native(currentSubtitle.group == "p" and "sub-visibility" or "secondary-sub-visibility", "yes")
+            end
+        end
+
+        reset()
+
+        collectgarbage()
     end
 
     sidebarEnabled = not sidebarEnabled
@@ -643,18 +727,21 @@ end
 
 local function tryGetSubtitles()
 
+    local isWindows = package.config:sub(1, 1) ~= '/'
+    local merged    = false
     local file
 
-    if data.merged then
+    if currentSubtitle.title == "merged.ass" then
 
-        file = io.open(getPath("mergedfile"), "r")
-    else
+        file   = io.open(getPath("mergedfile"), "r")
+        merged = true
+    end
 
-        local currentSubtitle = mp.get_property_native("current-tracks/sub", "")
+    if not file then
 
         if currentSubtitle.external then
 
-            local sourceFile = currentSubtitle["external-filename"]
+            local sourceFile = currentSubtitle.filename
             local targetFile = getPath("subtitlefile")
 
             if currentSubtitle.codec == "ass" then
@@ -675,58 +762,58 @@ local function tryGetSubtitles()
         file = io.open(getPath("subtitlefile"), "r")
     end
 
-    if file then
+    if not file then
 
-        local content  = file:read("*all")
-        local prevLine = {}
+        mp.osd_message("Subtitle not found!")
 
-        for line in content:gmatch("Dialogue:[^\n]+") do
-
-            local t = {line:match("^Dialogue:%s([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.+)$")}
-
-            if t then
-
-                local deleteThis = false
-                t[10]            = strip(t[10])
-
-                if data.merged and t[4] ~= "Primary" then deleteThis = true end
-
-                if config.remove_repeating_lines and prevLine then
-
-                    if prevLine[10] == t[10] and (prevLine[2] == t[2] or prevLine[3] == t[2]) then deleteThis = true end
-                end
-
-                if not deleteThis then table.insert(subtitles, {startTime = time2ms(t[2]) / 1000, endTime = time2ms(t[3]) / 1000, text = t[10]}) end
-
-                prevLine = t
-            end
-        end
-
-        if #subtitles > 0 then
-
-            if config.sort_lines then
-
-                table.sort(subtitles, function(a, b)
-
-                    return tonumber(a.startTime) < tonumber(b.startTime)
-                end)
-            end
-
-            mp.osd_message("")
-
-            initSidebar()
-
-            return true
-        end
-
-        mp.osd_message("The subtitle format is invalid.")
-
-        return true
+        return false
     end
 
-    mp.osd_message("Subtitle not found!")
+    local content  = file:read("*all")
+    local prevLine = {}
 
-    return false
+    for line in content:gmatch("Dialogue:[^\n]+") do
+
+        local t = {line:match("^Dialogue:%s([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.+)$")}
+
+        if t then
+
+            local deleteThis = false
+            t[10]            = strip(t[10])
+
+            if merged and t[4] ~= "Primary" then deleteThis = true end
+
+            if not deleteThis and config.remove_repeating_lines and prevLine then
+
+                if prevLine[10] == t[10] and (prevLine[2] == t[2] or prevLine[3] == t[2]) then deleteThis = true end
+            end
+
+            if not deleteThis then table.insert(subtitles, {startTime = time2ms(t[2]) / 1000, endTime = time2ms(t[3]) / 1000, text = t[10]}) end
+
+            prevLine = t
+        end
+    end
+
+    if #subtitles == 0 then
+
+        mp.osd_message("The subtitle format is unvalid!")
+
+        return false
+    end
+
+    if config.sort_lines then
+
+        table.sort(subtitles, function(a, b)
+
+            return tonumber(a.startTime) < tonumber(b.startTime)
+        end)
+    end
+
+    mp.osd_message("")
+
+    initSidebar()
+
+    return true
 end
 
 local function initSidebarWhenSubtitlesLoaded()
@@ -744,7 +831,7 @@ local function initSidebarWhenSubtitlesLoaded()
 
     if ok then return end
 
-    mp.osd_message("Getting subtitles...", 9999)
+    mp.osd_message("Getting subtitle lines...", 9999)
 
     local args = {}
 
@@ -753,7 +840,7 @@ local function initSidebarWhenSubtitlesLoaded()
     table.insert(args, mp.get_property("path"))
 
     table.insert(args, "-map")
-    table.insert(args, string.format("0:s:%s", mp.get_property_number("sid", 0) - 1))
+    table.insert(args, string.format("0:s:%s", currentSubtitle.id - 1))
     table.insert(args, "-c:s")
     table.insert(args, "ass")
     table.insert(args, getPath("subtitlefile"))
@@ -780,9 +867,12 @@ local function initSidebarWhenSubtitlesLoaded()
         elseif string.match(result, "Failed to set value") then
 
             mp.osd_message("Wrong subtitle id.", 3)
+        elseif string.match(result, "Subtitle encoding currently only possible from text to text or bitmap to bitmap") then
+
+            mp.osd_message("This is not a text-based subtitle.", 3)
         else
 
-            h.log(result)
+            log(result)
             mp.osd_message("See the console for details.", 3)
         end
     end
@@ -793,7 +883,27 @@ local function initSidebarWhenSubtitlesLoaded()
     end, onSubtitleFail)
 end
 
-local function toggleSidebar()
+local function toggleSidebar(subtitleType)
+
+    if not currentSubtitle.id then
+
+        local subtitle = getSubtitleInfo(subtitleType)
+
+        if not subtitle then
+
+            mp.osd_message("No subtitle detected.", 3)
+
+            return
+        end
+
+        currentSubtitle.id       = subtitle.id
+        currentSubtitle.lang     = subtitle.lang and subtitle.lang:gsub("[^a-zA-Z]", "") or "und"
+        currentSubtitle.external = subtitle.external
+        currentSubtitle.filename = subtitle["external-filename"]
+        currentSubtitle.codec    = subtitle.codec
+        currentSubtitle.group    = subtitleType == "primary" and "p" or "s"
+        currentSubtitle.title    = subtitle.title
+    end
 
     if customThemes.uosc == nil then customThemes.uosc = detectUOSC() end
 
@@ -882,12 +992,12 @@ local function searchResults()
     if #tempSubtitles == 0 then tempSubtitles = tableCopy(subtitles) end
 
     subtitles          = {}
-    local searchedText = input.get_text():lower()
+    local searchedText = utf8.lower(input.get_text())
     local c            = 0
 
     for i in ipairs(tempSubtitles) do
 
-        if string.find(tempSubtitles[i].text:lower(), searchedText, 1, true) then
+        if string.find(utf8.lower(tempSubtitles[i].text), searchedText, 1, true) then
 
             table.insert(subtitles, tempSubtitles[i])
         end
@@ -1008,12 +1118,15 @@ local function bindingList(section)
 
     elseif section == "search" then
 
-        local searchBindings = input.bindings(function()
+        local searchBindings = input.bindings({
 
-            search.refresh = true
+            after_changes = function()
 
-            enter()
-        end)
+                search.refresh = true
+
+                enter()
+            end
+        })
 
         return searchBindings
     end
@@ -1027,15 +1140,6 @@ end
 function unsetBindings(section)
 
     for name in pairs(bindingList(section)) do mp.remove_key_binding("sidebarsubtitles_"..section..name) end
-end
-
-local function reset()
-
-    data          = {}
-    subtitles     = {}
-    tempSubtitles = {}
-    offset        = 1
-    currentIndex  = 0
 end
 
 mp.observe_property("sub-text/ass", "native", function(_, text)
@@ -1063,14 +1167,13 @@ end)
 
 mp.observe_property("sid", "number", function(_, value)
 
-    if sidebarEnabled then toggleSidebar() end
-
-    reset()
+    if sidebarEnabled and currentSubtitle.group == "p" then toggleSidebar("primary") end
 end)
 
-mp.add_key_binding("h", "sidebarsubtitles", toggleSidebar)
+mp.observe_property("secondary-sid", "number", function(_, value)
 
-mp.register_event("file-loaded", function()
-
-    for key in pairs(colors) do colors[key] = assColor(colors[key]) end
+    if sidebarEnabled and currentSubtitle.group == "s" then toggleSidebar("secondary") end
 end)
+
+mp.add_key_binding("h",      "sidebarsubtitles_primary",   function() if sidebarEnabled and currentSubtitle.group == "s" then toggleSidebar("secondary") end toggleSidebar("primary")   end)
+mp.add_key_binding("Ctrl+h", "sidebarsubtitles_secondary", function() if sidebarEnabled and currentSubtitle.group == "p" then toggleSidebar("primary")   end toggleSidebar("secondary") end)

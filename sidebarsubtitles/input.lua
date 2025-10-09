@@ -1,4 +1,4 @@
---v1.2
+--v1.3
 local utf8  = require "fastutf8"
 local input = {}
 local cursor, text, s_width, s_height, b_width, cached
@@ -17,9 +17,10 @@ end
 
 local function filter(str)
 
-    if input.accept_only == "" then return str end
+    if input.accept_only == "" then
 
-    if input.accept_only == "digits" then
+        return str
+    elseif input.accept_only == "digits" then
 
         return str:gsub("%D+", "")
     elseif input.accept_only == "text" then
@@ -37,9 +38,10 @@ local function get_text_width(text)
     return (res and res.x1) and (res.x1 - res.x0) or 0
 end
 
-function input.get_clipboard()
+local function get_clipboard()
 
     local text = mp.get_property("clipboard/text", "")
+    text       = text:gsub("^%s*(.-)%s*$", "%1")
     text       = filter(text)
 
     return text
@@ -84,7 +86,8 @@ function input.calculate_offset(width, height, bar_width)
     b_width  = bar_width
 end
 
-function input.bindings(after_changes)
+--after_changes, edit_clipboard(text)
+function input.bindings(hooks)
 
     local list = {
 
@@ -95,7 +98,7 @@ function input.bindings(after_changes)
 
                 cursor = 0
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = nil
         },
@@ -107,7 +110,7 @@ function input.bindings(after_changes)
 
                 cursor = utf8.len(text)
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = nil
         },
@@ -124,7 +127,7 @@ function input.bindings(after_changes)
                 cursor = cursor - 1
                 cursor = math.max(cursor, 0)
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = {repeatable = true}
         },
@@ -144,7 +147,7 @@ function input.bindings(after_changes)
 
                 cursor = math.min(cursor, count)
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = {repeatable = true}
         },
@@ -154,28 +157,33 @@ function input.bindings(after_changes)
             key  = "ctrl+v",
             func = function ()
 
-                local clipboard_text = input.get_clipboard()
+                local clipboard_text = get_clipboard()
 
-                if input.format == "" then
+                if input.format ~= "" then
 
-                    local count = utf8.len(text)
+                    if hooks and hooks.edit_clipboard then clipboard_text = hooks.edit_clipboard(clipboard_text) end
 
-                    if count >= input.max_length then return end
-
-                    local pre_cursor  = cursor == 0 and "" or utf8.sub(text, 1, cursor)
-                    local post_cursor = utf8.sub(text, cursor + 1, 0)
-                    clipboard_text    = utf8.sub(clipboard_text, 1, input.max_length - count)
-                    text              = pre_cursor..clipboard_text..post_cursor
-                    cursor            = cursor + utf8.len(clipboard_text)
-
-                    if after_changes then after_changes() end
-                elseif text ~= clipboard_text and string.find(clipboard_text, "^"..input.format.."$") then
+                    if not string.find(clipboard_text, "^"..input.format.."$") then return end
 
                     text   = clipboard_text
                     cursor = utf8.len(text)
 
-                    if after_changes then after_changes() end
+                    if hooks and hooks.after_changes then hooks.after_changes() end
+
+                    return
                 end
+
+                local count = utf8.len(text)
+
+                if count >= input.max_length then return end
+
+                local pre_cursor  = cursor == 0 and "" or utf8.sub(text, 1, cursor)
+                local post_cursor = utf8.sub(text, cursor + 1, 0)
+                clipboard_text    = utf8.sub(clipboard_text, 1, input.max_length - count)
+                text              = pre_cursor..clipboard_text..post_cursor
+                cursor            = cursor + utf8.len(clipboard_text)
+
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = {repeatable = true}
         },
@@ -195,7 +203,7 @@ function input.bindings(after_changes)
                 local post_cursor = utf8.sub(text, cursor + 2, 0)
                 text              = pre_cursor..post_cursor
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = {repeatable = true}
         },
@@ -215,7 +223,7 @@ function input.bindings(after_changes)
                 local post_cursor = utf8.sub(text, cursor + 2, 0)
                 text              = pre_cursor..post_cursor
 
-                if after_changes then after_changes() end
+                if hooks and hooks.after_changes then hooks.after_changes() end
             end,
             opts = {repeatable = true}
         },
@@ -262,7 +270,7 @@ function input.bindings(after_changes)
                         end
                     end
 
-                    if after_changes then after_changes() end
+                    if hooks and hooks.after_changes then hooks.after_changes() end
                 end
             end,
             opts = {repeatable = true, complex = true}
