@@ -2,7 +2,7 @@
 
 ╔════════════════════════════════╗
 ║      MPV sidebarsubtitles      ║
-║             v1.0.7             ║
+║             v1.0.8             ║
 ╚════════════════════════════════╝
 
 ## Required ##
@@ -39,6 +39,7 @@ local search          = {enabled = false, refresh = false, timer = nil, resultTi
 local data            = {}
 local currentSubtitle = {}
 local customThemes    = {}
+local mouse           = {x = 0, y = 0}
 local colors          = {
 
     background       = "161616",
@@ -148,26 +149,27 @@ local function tableCopy(t)
     return copy
 end
 
-local function time2ms(uTime)
+local function ts2ms(ts)
 
-    local h, m, s, cs = uTime:match("(%d+):(%d+):(%d+)%.(%d+)")
+    local h, m, s, ms = ts:match("^(%d?%d):(%d%d):(%d%d)%.(%d%d%d?)$")
 
     if not h then return 0 end
 
-    return ((tonumber(h) * 3600) + (tonumber(m) * 60) + tonumber(s)) * 1000 + (tonumber(cs) * 10)
+    if #ts == 10 then ms = ms.."0" end
+
+    return tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(s) + tonumber(ms) / 1000
 end
 
-local function ms2time(uMS)
+local function ms2ts(secs)
 
-    if uMS == 0 then return "0:00:00.00" end
+    if secs == 0 then return "0:00:00.00" end
 
-    local tSecs = math.floor(uMS / 1000)
-    local h     = math.floor(tSecs / 3600)
-    local m     = math.floor((tSecs % 3600) / 60)
-    local s     = tSecs % 60
-    local cs    = math.floor((uMS % 1000) / 10)
+    local h  = math.floor(secs / 3600)
+    local m  = math.floor((secs % 3600) / 60)
+    local s  = secs % 60
+    local ms = math.floor((secs - math.floor(secs)) * 1000)
 
-    return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
+    return string.format("%d:%02d:%02d.%02d", h, m, s, ms)
 end
 
 local function hash(str)
@@ -188,12 +190,14 @@ end
 
 local function reset()
 
-    data            = {}
-    subtitles       = {}
-    tempSubtitles   = {}
-    offset          = 1
-    currentIndex    = 0
-    currentSubtitle = {}
+    data              = {}
+    subtitles         = {}
+    tempSubtitles     = {}
+    offset            = 1
+    currentIndex      = 0
+    currentSubtitle   = {}
+    search.processing = false
+    mouse             = {x = 0, y = 0}
 end
 
 local function getPath(key)
@@ -373,7 +377,7 @@ end
 
 local function convertTime(time)
 
-    time = ms2time(time * 1000)
+    time = ms2ts(time)
 
     if not config.use_timestamp then
 
@@ -386,7 +390,7 @@ local function convertTime(time)
     return time
 end
 
-local function drawSidebar(mouseY)
+local function drawSidebar()
 
     local ass   = assdraw.ass_new()
     local lineY = data.screenHeight - data.contentArea
@@ -527,7 +531,7 @@ local function drawSidebar(mouseY)
 
             --hover
 
-            if not search.processing and mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
+            if not search.processing and mouse.y and mouse.y > lineY and mouse.y < lineY + data.lineHeight then
 
                 ass:new_event()
                 ass:pos(data.videoWidth, lineY + data.borderHeight)
@@ -788,7 +792,7 @@ local function tryGetSubtitles()
                 if prevLine[10] == t[10] and (prevLine[2] == t[2] or prevLine[3] == t[2]) then deleteThis = true end
             end
 
-            if not deleteThis then table.insert(subtitles, {startTime = time2ms(t[2]) / 1000, endTime = time2ms(t[3]) / 1000, text = t[10]}) end
+            if not deleteThis then table.insert(subtitles, {startTime = ts2ms(t[2]), endTime = ts2ms(t[3]), text = t[10]}) end
 
             prevLine = t
         end
@@ -861,13 +865,13 @@ local function initSidebarWhenSubtitlesLoaded()
 
     local onSubtitleFail = function (result)
 
-        if string.match(result, "No such file or directory") then
+        if string.find(result, "No such file or directory") then
 
             mp.osd_message("No such file or directory.", 3)
-        elseif string.match(result, "Failed to set value") then
+        elseif string.find(result, "Failed to set value") then
 
             mp.osd_message("Wrong subtitle id.", 3)
-        elseif string.match(result, "Subtitle encoding currently only possible from text to text or bitmap to bitmap") then
+        elseif string.find(result, "Subtitle encoding currently only possible from text to text or bitmap to bitmap") then
 
             mp.osd_message("This is not a text-based subtitle.", 3)
         else
@@ -919,7 +923,7 @@ end
 
 local function findIndexByTime()
 
-    local startTime = mp.get_property_number("sub-start")
+    local startTime = mp.get_property_number(currentSubtitle.group == "p" and "sub-start" or "secondary-sub-start")
 
     if not startTime then return 0 end
 
@@ -971,23 +975,21 @@ end
 
 local function mouseInSidebarSearch()
 
-    if not sidebarEnabled then return end
+    mouse.x, mouse.y = mp.get_mouse_pos()
 
-    local x, y = mp.get_mouse_pos()
-
-    return x >= (data.videoWidth + config.padding_x) and x <= (data.videoWidth + config.width - config.padding_x) and y >= config.padding_y and y <= (config.padding_y + data.searchBoxHeight)
+    return mouse.x >= (data.videoWidth + config.padding_x) and mouse.x <= (data.videoWidth + config.width - config.padding_x) and mouse.y >= config.padding_y and mouse.y <= (config.padding_y + data.searchBoxHeight)
 end
 
 local function mouseInSidebar()
 
-    if not sidebarEnabled then return end
+    mouse.x, mouse.y = mp.get_mouse_pos()
 
-    local x, y = mp.get_mouse_pos()
-
-    return x >= data.videoWidth and x <= data.videoWidth + config.width
+    return mouse.x >= data.videoWidth and mouse.x <= data.videoWidth + config.width
 end
 
 local function searchResults()
+
+    if not sidebarEnabled then return end
 
     if #tempSubtitles == 0 then tempSubtitles = tableCopy(subtitles) end
 
@@ -1033,51 +1035,57 @@ local function bindingList(section)
                 key  = "mbtn_left",
                 func = function ()
 
-                    if not search.processing and mouseInSidebar() then
+                    if sidebarEnabled then
 
-                        local lineY     = data.screenHeight - data.contentArea
-                        local _, mouseY =  mp.get_mouse_pos()
+                        if not search.processing and mouseInSidebar() then
 
-                        for i = offset, offset + data.lineCount - 1 do
+                            local lineY = data.screenHeight - data.contentArea
 
-                            if mouseY and mouseY > lineY and mouseY < lineY + data.lineHeight then
+                            for i = offset, offset + data.lineCount - 1 do
 
-                                currentIndex = i
+                                if mouse.y and mouse.y > lineY and mouse.y < lineY + data.lineHeight then
 
-                                mp.commandv("seek", subtitles[i].startTime + 0.01, "absolute+exact")
+                                    currentIndex = i
 
-                                drawSidebar()
+                                    mp.commandv("seek", subtitles[i].startTime + 0.01, "absolute+exact")
+
+                                    drawSidebar()
+
+                                    break
+                                end
+
+                                lineY = lineY + data.lineHeight
                             end
-
-                            lineY = lineY + data.lineHeight
                         end
-                    end
 
-                    if mouseInSidebarSearch() then
+                        if mouseInSidebarSearch() then
 
-                        search.enabled = true
-                        search.refresh = true
+                            search.enabled = true
+                            search.refresh = true
 
-                        setBindings("search")
+                            setBindings("search")
 
-                        search.timer = mp.add_periodic_timer(0.05, function()
+                            if search.timer then search.timer:kill() end
 
-                            if search.refresh then
+                            search.timer = mp.add_periodic_timer(0.05, function()
 
-                                drawSidebar()
+                                if search.refresh then
 
-                                search.refresh = false
-                            end
-                        end)
-                    elseif search.enabled then
+                                    drawSidebar()
 
-                        search.enabled = false
+                                    search.refresh = false
+                                end
+                            end)
+                        elseif search.enabled then
 
-                        unsetBindings("search")
+                            search.enabled = false
 
-                        if search.timer then search.timer:kill() end
+                            unsetBindings("search")
 
-                        drawSidebar()
+                            if search.timer then search.timer:kill() end
+
+                            drawSidebar()
+                        end
                     end
                 end,
                 opts = nil
@@ -1088,7 +1096,7 @@ local function bindingList(section)
                 key  = "wheel_up",
                 func = function ()
 
-                    if not search.processing and mouseInSidebar() then
+                    if sidebarEnabled and not search.processing and mouseInSidebar() then
 
                         if offset > 1 then offset = offset - 1 end
 
@@ -1103,7 +1111,7 @@ local function bindingList(section)
                 key  = "wheel_down",
                 func = function ()
 
-                    if not search.processing and mouseInSidebar() then
+                    if sidebarEnabled and not search.processing and mouseInSidebar() then
 
                         if data.maxOffset and offset < data.maxOffset then offset = offset + 1 end
 
@@ -1142,9 +1150,9 @@ function unsetBindings(section)
     for name in pairs(bindingList(section)) do mp.remove_key_binding("sidebarsubtitles_"..section..name) end
 end
 
-mp.observe_property("sub-text/ass", "native", function(_, text)
+mp.observe_property("sub-text", "native", function(_, text)
 
-    if not search.processing and sidebarEnabled and text and text ~= "" and not mouseInSidebar() then
+    if sidebarEnabled and not search.processing and currentSubtitle.group == "p" and text and text ~= "" and not mouseInSidebar() then
 
         local foundedIndex = findIndexByTime()
 
@@ -1157,11 +1165,26 @@ mp.observe_property("sub-text/ass", "native", function(_, text)
     end
 end)
 
-mp.observe_property("mouse-pos", "native", function(_, value)
+mp.observe_property("secondary-sub-text", "native", function(_, text)
 
-    if not search.processing and mouseInSidebar() then
+    if sidebarEnabled and not search.processing and currentSubtitle.group == "s" and text and text ~= "" and not mouseInSidebar() then
 
-        drawSidebar(value.y)
+        local foundedIndex = findIndexByTime()
+
+        if foundedIndex > 0 then
+
+            currentIndex = foundedIndex
+
+            drawSidebar()
+        end
+    end
+end)
+
+mp.observe_property("mouse-pos", "native", function()
+
+    if sidebarEnabled and not search.processing and mouseInSidebar() then
+
+        drawSidebar()
     end
 end)
 

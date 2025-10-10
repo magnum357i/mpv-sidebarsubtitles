@@ -3,19 +3,19 @@
 
 A plugin I made just for my own fun. You can see the subtitle content in the sidebar. This repository was created as a backup and in case it might help others.
 
-# Usage
-
-https://github.com/user-attachments/assets/57357a42-b189-444b-b1eb-f04692295ac4
-
 # Key Bindings
 | shortcut            | description                         |
 | ------------------- | ----------------------------------- |
 | <kbd>h</kbd>        | open sidebar for primary subtitle   |
 | <kbd>Ctrl+h</kbd>   | open sidebar for secondary subtitle |
 
+# Usage
+
+https://github.com/user-attachments/assets/57357a42-b189-444b-b1eb-f04692295ac4
+
 # Installation
 1. Install `FFmpeg`.
-2. Place `sidebarsubtitles` folder into your **scripts** directory.
+2. Place `sidebarsubtitles` folder into your `scripts` directory.
 
 ### MPV Default
 I’m not planning to shrink the controls for the default theme, please use [uosc](https://github.com/tomasklaen/uosc).
